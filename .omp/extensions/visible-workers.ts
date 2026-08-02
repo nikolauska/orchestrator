@@ -13,7 +13,7 @@ export type RuntimeDeps = {
 type ToolResult = { content: [{ type: "text"; text: string }]; isError?: boolean; details?: unknown };
 type ProjectParams = { op: "list" } | { op: "add"; name: string; path: string } | { op: "remove"; name: string };
 type TaskKind = "implementation" | "scout";
-type TaskItem = { kind: TaskKind; name: string; task: string; pushTo?: string };
+type TaskItem = { kind: TaskKind; name: string; task: string; role?: string; pushTo?: string };
 type TaskParams = { project: string; context: string; tasks: TaskItem[] };
 type WorkersParams = { op: "list" } | { op: "send"; names: string[]; message: string };
 type AgentState = "idle" | "working" | "blocked" | "done";
@@ -32,6 +32,7 @@ type WorkerRecord = {
 	project: string;
 	projectPath: string;
 	name: string;
+	role?: string;
 	status: "working" | "blocked" | "failed";
 	workspace_id: string;
 	tab_id: string;
@@ -127,7 +128,7 @@ export class VisibleWorkerRuntime {
 		this.#active = true;
 		try {
 			// OMP's strict tool schema transport materializes an omitted optional string as ""; keep omission as local delivery.
-			params = { ...params, tasks: params.tasks.map(({ pushTo, ...item }) => pushTo ? { ...item, pushTo } : item) };
+			params = { ...params, tasks: params.tasks.map(({ pushTo, role, ...item }) => ({ ...item, ...(pushTo ? { pushTo } : {}), ...(role ? { role } : {}) })) };
 			this.#validateTask(params);
 			const active = params.tasks.find(item => this.#workers.has(item.name));
 			if (active) throw new Error(`Worker name already retained: ${active.name}`);
@@ -215,6 +216,7 @@ export class VisibleWorkerRuntime {
 			names.add(item.name);
 			if (item.kind !== "implementation" && item.kind !== "scout") throw new Error(`Invalid task kind for ${item.name}: ${item.kind}`);
 			if (typeof item.task !== "string" || !item.task.trim()) throw new Error(`Task for ${item.name} must be non-empty`);
+			if (item.role !== undefined && !NAME.test(item.role)) throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
 			if (item.kind === "scout" && item.pushTo !== undefined) throw new Error(`Scout task ${item.name} cannot set pushTo`);
 			if (item.pushTo !== undefined && (typeof item.pushTo !== "string" || !item.pushTo.trim())) throw new Error(`pushTo for ${item.name} must be non-empty`);
 		}
@@ -271,7 +273,7 @@ export class VisibleWorkerRuntime {
 			// Tab creation returns before the startup shell necessarily reaches its prompt; agent start rejects a transiently busy pane.
 			await this.#run("herdr", ["pane", "wait-output", paneId, "--regex", "[#$>]\\s*$", "--source", "visible", "--lines", "10", "--timeout", "5000"], { signal });
 			ompMayHaveStarted = true;
-			await this.#run("herdr", ["agent", "start", item.name, "--kind", "omp", "--pane", paneId, "--", "--cwd", lease.path], { signal });
+			await this.#run("herdr", ["agent", "start", item.name, "--kind", "omp", "--pane", paneId, "--", "--cwd", lease.path, ...(item.role ? ["--model", `@${item.role}`] : [])], { signal });
 			const prompt = item.kind === "scout"
 				? `${context}\n\nResearch only the exact committed revision ${preflight.head}; the registered checkout's local changes are excluded from this disposable worktree.${preflight.localChanges ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}` : " The registered checkout has no local changes to exclude."}\nYou may make scratch edits or commits only in this disposable worktree. They will never be delivered. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents. Do not implement changes for delivery.\n\n${item.task}`
 				: `${context}\n\n${IMPLEMENTATION_PROMPT_SUFFIX}\n\n${item.task}`;
@@ -279,7 +281,7 @@ export class VisibleWorkerRuntime {
 			const agent = await this.#agent(paneId, signal);
 			if (agent.identity !== "omp") throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
 			const record: WorkerRecord = {
-				kind: item.kind, project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: agent.status === "blocked" ? "blocked" : "working",
+				kind: item.kind, project: preflight.project, projectPath: preflight.projectPath, name: item.name, role: item.role, status: agent.status === "blocked" ? "blocked" : "working",
 				workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path,
 				lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo,
 				report_path: reportPath, local_changes: item.kind === "scout" ? preflight.localChanges : undefined, generation: 0,
@@ -296,10 +298,10 @@ export class VisibleWorkerRuntime {
 				if (tabId) await this.#bestEffort("herdr", ["tab", "close", tabId], signal);
 				if (lease) await this.#bestEffort("treehouse", ["return", "--force", "--if-lease-id", lease.lease_id, "--if-lease-holder", lease.lease_holder, lease.path], signal);
 			} else if (lease && tabId && paneId) {
-				const record: WorkerRecord = { kind: item.kind, project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: "failed", workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path, lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, report_path: reportPath, local_changes: item.kind === "scout" ? preflight.localChanges : undefined, error: message, generation: 0 };
+				const record: WorkerRecord = { kind: item.kind, project: preflight.project, projectPath: preflight.projectPath, name: item.name, role: item.role, status: "failed", workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path, lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, report_path: reportPath, local_changes: item.kind === "scout" ? preflight.localChanges : undefined, error: message, generation: 0 };
 				this.#workers.set(item.name, record);
 			}
-			return { kind: item.kind, project: preflight.project, name: item.name, status: "failed", ...(lease ? { worktree: lease.path, lease_id: lease.lease_id } : {}), ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}), ...(paneId ? { pane_id: paneId } : {}), delivery_base: preflight.head, ...(item.pushTo ? { push_to: item.pushTo } : {}), ...(reportPath ? { report_path: reportPath, local_changes: preflight.localChanges } : {}), error: message };
+			return { kind: item.kind, project: preflight.project, name: item.name, ...(item.role ? { role: item.role } : {}), status: "failed", ...(lease ? { worktree: lease.path, lease_id: lease.lease_id } : {}), ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}), ...(paneId ? { pane_id: paneId } : {}), delivery_base: preflight.head, ...(item.pushTo ? { push_to: item.pushTo } : {}), ...(reportPath ? { report_path: reportPath, local_changes: preflight.localChanges } : {}), error: message };
 		}
 	}
 
@@ -443,7 +445,7 @@ export class VisibleWorkerRuntime {
 	}
 
 	#terminal(record: WorkerRecord, status: "merged" | "pushed" | "no_changes" | "completed_with_report" | "blocked" | "failed", output: string, error?: string, branch?: string, report?: string): Record<string, unknown> {
-		return { kind: record.kind, project: record.project, name: record.name, status, output, ...(branch ? { branch } : {}), ...(report ? { report } : {}), ...(record.report_path ? { report_path: record.report_path, local_changes: record.local_changes ?? "" } : {}), ...(error ? { error } : {}), workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id };
+		return { kind: record.kind, project: record.project, name: record.name, ...(record.role ? { role: record.role } : {}), status, output, ...(branch ? { branch } : {}), ...(report ? { report } : {}), ...(record.report_path ? { report_path: record.report_path, local_changes: record.local_changes ?? "" } : {}), ...(error ? { error } : {}), workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id };
 	}
 
 	#notify(outcome: Record<string, unknown>): void {
@@ -452,7 +454,7 @@ export class VisibleWorkerRuntime {
 	}
 
 	#publicRecord(record: WorkerRecord): Record<string, unknown> {
-		return { kind: record.kind, project: record.project, name: record.name, status: record.status, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id, delivery_base: record.delivery_base, ...(record.push_to ? { push_to: record.push_to } : {}), ...(record.report_path ? { report_path: record.report_path, local_changes: record.local_changes ?? "" } : {}), ...(record.error ? { error: record.error } : {}) };
+		return { kind: record.kind, project: record.project, name: record.name, ...(record.role ? { role: record.role } : {}), status: record.status, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id, delivery_base: record.delivery_base, ...(record.push_to ? { push_to: record.push_to } : {}), ...(record.report_path ? { report_path: record.report_path, local_changes: record.local_changes ?? "" } : {}), ...(record.error ? { error: record.error } : {}) };
 	}
 
 	async #agent(pane: string, signal?: AbortSignal): Promise<{ identity: string; status: AgentState | string }> {
@@ -497,10 +499,10 @@ export default function visibleWorkersExtension(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "task", label: "Visible Workers", loadMode: "essential", approval: "exec",
-		description: "Launch implementation or scout OMP workers for a registered project in visible Herdr tabs and isolated Treehouse worktrees. Every assignment declares its kind. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
+		description: "Launch implementation or scout OMP workers for a registered project in visible Herdr tabs and isolated Treehouse worktrees. Each assignment declares its kind and may select an OMP model role: smol for bounded research or mechanical work, slow for deep diagnosis or review, plan for architecture/schema/migration planning, designer for UI/UX, or vision for image inspection; omit role for normal work. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
 		parameters: z.object({ project: z.string(), context: z.string(), tasks: z.array(z.discriminatedUnion("kind", [
-			z.object({ kind: z.literal("implementation"), name: z.string(), task: z.string(), pushTo: z.string().optional() }).strict(),
-			z.object({ kind: z.literal("scout"), name: z.string(), task: z.string() }).strict(),
+			z.object({ kind: z.literal("implementation"), name: z.string(), task: z.string(), role: z.string().optional(), pushTo: z.string().optional() }).strict(),
+			z.object({ kind: z.literal("scout"), name: z.string(), task: z.string(), role: z.string().optional() }).strict(),
 		])).min(1).max(32) }),
 		execute: async (_id: string, params: TaskParams, signal?: AbortSignal) => runtime.runTask(params, signal),
 	});

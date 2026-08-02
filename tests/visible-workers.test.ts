@@ -228,6 +228,26 @@ describe("launch and control", () => {
 		expect(fake.calls.find(call => call.command === "herdr" && call.args.includes("create"))?.args).toContain("workspace");
 	});
 
+	test("selects an OMP model role per task", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+		const invalid = await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "scout", name: "invalid", task: "work", role: "@smol" }] });
+		expect(invalid.content[0].text).toContain("Invalid OMP model role");
+		expect(fake.calls.some(call => call.command === "treehouse")).toBe(false);
+
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [
+			{ kind: "scout", name: "default", task: "work" },
+			{ kind: "scout", name: "fast", task: "work", role: "smol" },
+		] });
+		expect(result.isError).toBeUndefined();
+		const starts = fake.calls.filter(call => call.command === "herdr" && call.args.includes("start"));
+		expect(starts.find(call => call.args.includes("fast"))?.args.slice(-2)).toEqual(["--model", "@smol"]);
+		expect(starts.find(call => call.args.includes("default"))?.args).not.toContain("--model");
+		expect((result.details as Array<Record<string, unknown>>).find(worker => worker.name === "fast")?.role).toBe("smol");
+	});
+
 	test("launches concurrently and steers only named workers", async () => {
 		const { fake, instance, result } = await launchedPair();
 		expect(result.content[0].text).toStartWith("Visible workers launched:\n");

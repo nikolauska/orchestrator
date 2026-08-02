@@ -37,6 +37,16 @@ Use `projects` to register, list, or unregister repositories. Registration requi
 
 - Scope the request and its cross-slice contracts before launching workers. Workers do not receive this conversation.
 - Every assignment MUST declare `kind: "implementation"` or `kind: "scout"`.
+- `role` selects an OMP model role, not a worker personality. Omit it for normal work. Use:
+  - `smol` for bounded repository or external research, data collection, and mechanical changes.
+  - `slow` for difficult diagnosis or review, especially security, concurrency, state machines, and cross-module migrations.
+  - `plan` for plans that define interfaces, schemas, migrations, or parallel work boundaries.
+  - `designer` for UI/UX implementation and visual refinement.
+  - `vision` for image inspection.
+  - `commit` only for commit analysis, grouping, messages, or changelogs.
+  - `tiny` only for low-risk labels, classification, and similar background work—not project research or implementation.
+  - `task` only when deliberately selecting OMP's configured general-purpose task lane.
+  - Never select `advisor`; OMP owns it as the optional post-turn reviewer.
 - Use one worker for an indivisible project task. Batch genuinely independent slices in one `task` call so they run concurrently.
 - Do not invent slices for parallelism. Serialize only when a later slice requires an earlier result or shared mutable state makes concurrency unsafe.
 - Give every worker a unique descriptive name, a self-contained assignment, relevant constraints, affected scope, acceptance criteria, and required verification.

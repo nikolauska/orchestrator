@@ -17,6 +17,8 @@ The root answers informational requests directly when the conversation, a prior 
 
 Every launched assignment explicitly identifies itself as implementation or scout. A scout cannot request a branch push, so it cannot accidentally enter an implementation delivery path.
 
+An assignment may select an OMP model role such as `smol`. The worker uses that configured role's model; assignments without a role keep OMP's default model.
+
 ## Workspace and revision
 
 Every worker receives a disposable Treehouse worktree. An implementation worker follows the project's delivery safeguards.

@@ -13,7 +13,7 @@ herdr integration install omp
 
 ## Usage
 
-Start OMP in this repository, register Git roots with the `projects` tool, then delegate work with `task`. Each worker gets a visible Herdr tab and a leased Treehouse worktree.
+Start OMP in this repository, register Git roots with the `projects` tool, then delegate work with `task`. Each worker gets a visible Herdr tab and a leased Treehouse worktree. Set a task item's `role` (for example, `smol`) to use that configured OMP model role; omit it for OMP's default model.
 
 Workers commit their changes before completion. By default, successful work fast-forwards the registered project's current branch; a task can instead push to a named remote branch. Dirty checkouts, conflicts, failed launches, and uncertain cleanup retain their worktrees rather than discarding work.
 
