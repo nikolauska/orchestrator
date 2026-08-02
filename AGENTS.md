@@ -60,8 +60,10 @@ Use `projects` to register, list, or unregister repositories. Registration requi
 
 ## Supervision
 
-- A worker completion wakes the root automatically. Do not poll while other useful coordination work exists.
-- Use `workers list` for an intentional state check or recovery, not as a substitute for completion notifications.
+- Completion is queued as a runtime-managed `nextTurn` continuation. After launching workers, do useful independent work.
+- When no useful independent work remains, end the current run without shell sleep, repeated `workers list`, or `hub wait`; ending the run for that continuation is allowed and is not an incomplete delivery.
+- Do not present a launch or interim status as completion.
+- Use `workers list` only once, and only for intentional recovery after evidence of lost notification or session continuity.
 - Relay changed requirements or corrections with `workers send` to only the affected workers.
 - Treat direct user intervention in a worker tab as authoritative and reconcile it before further steering.
 - Retain blocked or failed workers. Report their Herdr tab and Treehouse worktree or neutral working directory when direct inspection or recovery is useful.
