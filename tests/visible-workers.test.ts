@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { VisibleWorkerRuntime, type ExecResult, type RuntimeDeps } from "../.omp/extensions/visible-workers";
@@ -33,6 +33,7 @@ class FakeExec {
 	projectDirty = false;
 	rebaseFails = false;
 	promptStallsOnce = false;
+	agentIdentity = "omp";
 	#reportedPromptStall = false;
 	readonly project: string;
 
@@ -72,7 +73,7 @@ class FakeExec {
 		}
 		if (command === "herdr" && args.includes("agent") && args.includes("get")) {
 			const pane = args.at(-1)!;
-			return this.#ok(JSON.stringify({ result: { agent: { agent: "omp", agent_status: this.status.get(pane) ?? "working" } } }));
+			return this.#ok(JSON.stringify({ result: { agent: { agent: this.agentIdentity, agent_status: this.status.get(pane) ?? "working" } } }));
 		}
 		if (command === "herdr" && args.includes("agent") && args.includes("read")) {
 			const pane = args[args.indexOf("read") + 1];
@@ -134,13 +135,13 @@ class FakeExec {
 	#fail(stderr: string): ExecResult { return { stdout: "", stderr, code: 1 }; }
 }
 
-function runtime(root: string, fake: FakeExec, messages: Array<{ message: string; options: unknown }>, env: Record<string, string | undefined> = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "socket", HERDR_PANE_ID: "workspace:root" }) {
+function runtime(root: string, fake: FakeExec, messages: Array<{ message: string; options: unknown }>, env: Record<string, string | undefined> = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "socket", HERDR_PANE_ID: "workspace:root" }, neutralRoot?: string) {
 	const deps: RuntimeDeps = {
 		exec: fake.exec,
 		sendMessage: (message, options) => messages.push({ message, options }),
 		logger: {},
 	};
-	return new VisibleWorkerRuntime(deps, root, env);
+	return new VisibleWorkerRuntime(deps, root, env, neutralRoot);
 }
 
 async function register(instance: VisibleWorkerRuntime, project: string, name = "fixture") {
@@ -167,6 +168,17 @@ async function launchedScout() {
 	const result = await instance.runTask({ project: "fixture", context: "shared", tasks: [{ kind: "scout", name: "scout", task: "Investigate" }] });
 	const launched = (result.details as Array<Record<string, unknown>>)[0];
 	return { root, project, fake, messages, instance, result, launched, reportPath: launched.report_path as string };
+}
+
+async function launchedIndependent(tasks = [{ kind: "scout" as const, name: "independent", task: "Research vendors" }]) {
+	const { root, project } = await fixtureRoot();
+	const neutralRoot = `${root}-neutral`;
+	roots.push(neutralRoot);
+	const fake = new FakeExec(project);
+	const messages: Array<{ message: string; options: unknown }> = [];
+	const instance = runtime(root, fake, messages, undefined, neutralRoot);
+	const result = await instance.runTask({ scope: "independent", context: "shared", tasks });
+	return { root, neutralRoot, fake, messages, instance, result };
 }
 
 async function eventually(assertion: () => void) {
@@ -365,6 +377,83 @@ describe("scout reports", () => {
 			expect((await launched.instance.runWorkers({ op: "list" })).details).toHaveLength(1);
 			expect(launched.fake.calls.some(call => call.command === "herdr" && call.args.includes("close"))).toBe(false);
 			expect(launched.fake.calls.some(call => call.command === "treehouse" && call.args[0] === "return")).toBe(false);
+		}
+	});
+});
+
+describe("project-independent scouts", () => {
+	test("rejects invalid and mixed scopes before acquiring resources", async () => {
+		const { root, project } = await fixtureRoot();
+		const neutralRoot = `${root}-neutral`;
+		roots.push(neutralRoot);
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, [], undefined, neutralRoot);
+		for (const params of [
+			{ scope: "independent", context: "", tasks: [{ kind: "implementation", name: "write", task: "Change files" }] },
+			{ scope: "independent", context: "", tasks: [{ kind: "scout", name: "push", task: "Research", pushTo: "branch" }] },
+			{ scope: "project", context: "", tasks: [{ kind: "scout", name: "bad-scope", task: "Research" }] },
+			{ scope: "independent", project: "fixture", context: "", tasks: [{ kind: "scout", name: "mixed", task: "Research" }] },
+		]) {
+			expect((await instance.runTask(params as never)).isError).toBe(true);
+		}
+		expect(fake.calls).toHaveLength(0);
+		expect(await lstat(neutralRoot).then(() => true, () => false)).toBe(false);
+	});
+
+	test("launches concurrently without registry, Git, or Treehouse and states provenance policy", async () => {
+		const launched = await launchedIndependent([
+			{ kind: "scout", name: "market-a", task: "Research A" },
+			{ kind: "scout", name: "market-b", task: "Research B" },
+		]);
+		expect(launched.result.isError).toBeUndefined();
+		const records = launched.result.details as Array<Record<string, unknown>>;
+		const directories = records.map(record => record.working_directory as string);
+		expect(new Set(directories).size).toBe(2);
+		expect(directories.every(path => path.startsWith(`${launched.neutralRoot}/`))).toBe(true);
+		expect(records.every(record => record.scope === "independent" && !("project" in record) && !("worktree" in record) && !("lease_id" in record) && !("delivery_base" in record))).toBe(true);
+		expect(records.every(record => String(record.report_path).includes("/.omp/reports/_independent/"))).toBe(true);
+		expect(launched.fake.calls.some(call => call.command === "git" || call.command === "treehouse")).toBe(false);
+		const starts = launched.fake.calls.filter(call => call.command === "herdr" && call.args.includes("start"));
+		expect(starts.map(call => call.args[call.args.indexOf("--cwd") + 1]).sort()).toEqual(directories.sort());
+		const prompt = launched.fake.calls.find(call => call.command === "herdr" && call.args.includes("prompt"))?.args.join(" ") ?? "";
+		for (const required of ["project-independent scout", "No registered-project checkout or project revision applies", "project-specific context is intentionally excluded", "Scratch files", "Public web search", "authenticated external systems", "source URLs", "research date", "authoritative, non-empty standalone Markdown report"]) expect(prompt).toContain(required);
+		for (const excluded of ["exact committed revision", "local changes are excluded", "disposable worktree"]) expect(prompt).not.toContain(excluded);
+	});
+
+	test("settles reports before removing the neutral directory", async () => {
+		const launched = await launchedIndependent();
+		const record = (launched.result.details as Array<Record<string, unknown>>)[0];
+		const reportPath = record.report_path as string;
+		const directory = record.working_directory as string;
+		const report = "# Vendor research\n\nResearch date: 2026-08-02\n\nSource: https://example.com";
+		await writeFile(reportPath, report);
+		await writeFile(join(directory, "scratch.txt"), "disposable");
+		launched.fake.outputs.set("pane:independent", "Compared vendors.");
+		launched.fake.settle("independent");
+		await eventually(() => expect(launched.messages.length).toBe(1));
+		const outcome = JSON.parse(launched.messages[0].message.slice("Visible worker result:\n".length));
+		expect(outcome).toMatchObject({ kind: "scout", scope: "independent", status: "completed_with_report", report, report_path: reportPath, working_directory: directory });
+		expect("project" in outcome || "worktree" in outcome || "lease_id" in outcome || "delivery_base" in outcome).toBe(false);
+		expect(await lstat(directory).then(() => true, () => false)).toBe(false);
+		expect(await readFile(reportPath, "utf8")).toBe(report);
+		expect((await launched.instance.runWorkers({ op: "list" })).details).toEqual([]);
+	});
+
+	test("retains neutral directories and tabs for report, blocked, and worker failures", async () => {
+		for (const failure of ["report", "blocked", "worker"] as const) {
+			const launched = await launchedIndependent([{ kind: "scout", name: failure, task: "Research" }]);
+			const record = (launched.result.details as Array<Record<string, unknown>>)[0];
+			const directory = record.working_directory as string;
+			if (failure === "blocked") launched.fake.settle(failure, "blocked");
+			else {
+				if (failure === "worker") launched.fake.agentIdentity = "unexpected";
+				launched.fake.settle(failure);
+			}
+			await eventually(() => expect(launched.messages.length).toBe(1));
+			expect(await lstat(directory).then(() => true, () => false)).toBe(true);
+			const retained = (await launched.instance.runWorkers({ op: "list" })).details as Array<Record<string, unknown>>;
+			expect(retained[0]).toMatchObject({ scope: "independent", working_directory: directory });
+			expect(launched.fake.calls.some(call => call.command === "herdr" && call.args.includes("close"))).toBe(false);
 		}
 	});
 });
