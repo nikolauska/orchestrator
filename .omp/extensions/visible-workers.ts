@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
-import { mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
 
 export type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 export type RuntimeDeps = {
@@ -12,7 +12,8 @@ export type RuntimeDeps = {
 
 type ToolResult = { content: [{ type: "text"; text: string }]; isError?: boolean; details?: unknown };
 type ProjectParams = { op: "list" } | { op: "add"; name: string; path: string } | { op: "remove"; name: string };
-type TaskItem = { name: string; task: string; pushTo?: string };
+type TaskKind = "implementation" | "scout";
+type TaskItem = { kind: TaskKind; name: string; task: string; pushTo?: string };
 type TaskParams = { project: string; context: string; tasks: TaskItem[] };
 type WorkersParams = { op: "list" } | { op: "send"; names: string[]; message: string };
 type AgentState = "idle" | "working" | "blocked" | "done";
@@ -22,10 +23,12 @@ type Preflight = {
 	workspace: string;
 	head: string;
 	branch?: string;
+	localChanges: string;
 };
 
 
 type WorkerRecord = {
+	kind: TaskKind;
 	project: string;
 	projectPath: string;
 	name: string;
@@ -39,6 +42,8 @@ type WorkerRecord = {
 	delivery_base: string;
 	branch?: string;
 	push_to?: string;
+	report_path?: string;
+	local_changes?: string;
 	error?: string;
 	generation: number;
 	watch?: AbortController;
@@ -46,7 +51,7 @@ type WorkerRecord = {
 
 const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const LEASE_ID = /^[0-9a-fA-F]{32}$/;
-const PROMPT_SUFFIX = "Complete this assignment directly; do not delegate to subagents. Commit all assignment changes before reporting completion.";
+const IMPLEMENTATION_PROMPT_SUFFIX = "Complete this assignment directly; do not delegate to subagents. Commit all assignment changes before reporting completion.";
 
 function text(text: string, details?: unknown, isError = false): ToolResult {
 	return { content: [{ type: "text", text }], details, ...(isError ? { isError: true } : {}) };
@@ -208,7 +213,9 @@ export class VisibleWorkerRuntime {
 			this.#validateName(item.name, "worker");
 			if (names.has(item.name)) throw new Error(`Duplicate worker name: ${item.name}`);
 			names.add(item.name);
+			if (item.kind !== "implementation" && item.kind !== "scout") throw new Error(`Invalid task kind for ${item.name}: ${item.kind}`);
 			if (typeof item.task !== "string" || !item.task.trim()) throw new Error(`Task for ${item.name} must be non-empty`);
+			if (item.kind === "scout" && item.pushTo !== undefined) throw new Error(`Scout task ${item.name} cannot set pushTo`);
 			if (item.pushTo !== undefined && (typeof item.pushTo !== "string" || !item.pushTo.trim())) throw new Error(`pushTo for ${item.name} must be non-empty`);
 		}
 	}
@@ -227,14 +234,18 @@ export class VisibleWorkerRuntime {
 		if (await realpath(top.trim()) !== canonical || canonical !== projectPath) throw new Error(`Registered path is not its exact Git root: ${projectPath}`);
 		const head = (await this.#run("git", ["rev-parse", "HEAD"], { cwd: canonical, signal })).trim();
 		for (const item of params.tasks) if (item.pushTo) await this.#run("git", ["check-ref-format", "--branch", item.pushTo], { cwd: canonical, signal });
+		const needsLocalDelivery = params.tasks.some(item => item.kind === "implementation" && !item.pushTo);
+		const needsLocalChanges = needsLocalDelivery || params.tasks.some(item => item.kind === "scout");
+		const localChanges = needsLocalChanges
+			? await this.#run("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: canonical, signal })
+			: "";
 		let branch: string | undefined;
-		if (params.tasks.some(item => !item.pushTo)) {
-			const dirty = await this.#run("git", ["status", "--porcelain=v1", "--untracked-files=all"], { cwd: canonical, signal });
-			if (dirty) throw new Error(`Registered project must be clean for local delivery: ${params.project}`);
+		if (needsLocalDelivery) {
+			if (localChanges) throw new Error(`Registered project must be clean for local delivery: ${params.project}`);
 			branch = (await this.#run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: canonical, signal })).trim();
 			if (!branch) throw new Error("Local delivery requires a named branch");
 		}
-		return { project: params.project, projectPath: canonical, workspace, head, branch };
+		return { project: params.project, projectPath: canonical, workspace, head, branch, localChanges };
 	}
 
 	async #launch(preflight: Preflight, context: string, item: TaskItem, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -243,6 +254,7 @@ export class VisibleWorkerRuntime {
 		let tabId: string | undefined;
 		let paneId: string | undefined;
 		let ompMayHaveStarted = false;
+		const reportPath = item.kind === "scout" ? join(this.#root, ".omp", "reports", preflight.project, `${crypto.randomUUID()}-${item.name}.md`) : undefined;
 		try {
 			const leaseJson = parseJson(await this.#run("treehouse", ["get", "--lease", "--lease-holder", leaseHolder, "--json"], { cwd: preflight.projectPath, signal }), "treehouse get");
 			const leasePath = stringAt(leaseJson, ["path"]);
@@ -250,6 +262,7 @@ export class VisibleWorkerRuntime {
 			const echoedHolder = stringAt(leaseJson, ["lease_holder"]);
 			if (!leasePath || !isAbsolute(leasePath) || !leaseId || !LEASE_ID.test(leaseId) || echoedHolder !== leaseHolder) throw new Error("treehouse get returned an unrecognized lease");
 			lease = { path: leasePath, lease_id: leaseId, lease_holder: echoedHolder };
+			if (reportPath) await mkdir(dirname(reportPath), { recursive: true });
 			await this.#run("git", ["-C", lease.path, "reset", "--hard", preflight.head], { signal });
 			const tabJson = parseJson(await this.#run("herdr", ["tab", "create", "--workspace", preflight.workspace, "--cwd", lease.path, "--label", item.name, "--no-focus"], { signal }), "herdr tab create");
 			tabId = stringAt(tabJson, ["result", "tab", "tab_id"]);
@@ -259,14 +272,17 @@ export class VisibleWorkerRuntime {
 			await this.#run("herdr", ["pane", "wait-output", paneId, "--regex", "[#$>]\\s*$", "--source", "visible", "--lines", "10", "--timeout", "5000"], { signal });
 			ompMayHaveStarted = true;
 			await this.#run("herdr", ["agent", "start", item.name, "--kind", "omp", "--pane", paneId, "--", "--cwd", lease.path], { signal });
-			const prompt = `${context}\n\n${PROMPT_SUFFIX}\n\n${item.task}`;
+			const prompt = item.kind === "scout"
+				? `${context}\n\nResearch only the exact committed revision ${preflight.head}; the registered checkout's local changes are excluded from this disposable worktree.${preflight.localChanges ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}` : " The registered checkout has no local changes to exclude."}\nYou may make scratch edits or commits only in this disposable worktree. They will never be delivered. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents. Do not implement changes for delivery.\n\n${item.task}`
+				: `${context}\n\n${IMPLEMENTATION_PROMPT_SUFFIX}\n\n${item.task}`;
 			await this.#prompt(paneId, prompt, signal);
 			const agent = await this.#agent(paneId, signal);
 			if (agent.identity !== "omp") throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
 			const record: WorkerRecord = {
-				project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: agent.status === "blocked" ? "blocked" : "working",
+				kind: item.kind, project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: agent.status === "blocked" ? "blocked" : "working",
 				workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path,
-				lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, generation: 0,
+				lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo,
+				report_path: reportPath, local_changes: item.kind === "scout" ? preflight.localChanges : undefined, generation: 0,
 			};
 			this.#workers.set(item.name, record);
 			if (agent.status === "working") this.#watch(record);
@@ -280,10 +296,10 @@ export class VisibleWorkerRuntime {
 				if (tabId) await this.#bestEffort("herdr", ["tab", "close", tabId], signal);
 				if (lease) await this.#bestEffort("treehouse", ["return", "--force", "--if-lease-id", lease.lease_id, "--if-lease-holder", lease.lease_holder, lease.path], signal);
 			} else if (lease && tabId && paneId) {
-				const record: WorkerRecord = { project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: "failed", workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path, lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, error: message, generation: 0 };
+				const record: WorkerRecord = { kind: item.kind, project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: "failed", workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path, lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, report_path: reportPath, local_changes: item.kind === "scout" ? preflight.localChanges : undefined, error: message, generation: 0 };
 				this.#workers.set(item.name, record);
 			}
-			return { project: preflight.project, name: item.name, status: "failed", ...(lease ? { worktree: lease.path, lease_id: lease.lease_id } : {}), ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}), ...(paneId ? { pane_id: paneId } : {}), delivery_base: preflight.head, ...(item.pushTo ? { push_to: item.pushTo } : {}), error: message };
+			return { kind: item.kind, project: preflight.project, name: item.name, status: "failed", ...(lease ? { worktree: lease.path, lease_id: lease.lease_id } : {}), ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}), ...(paneId ? { pane_id: paneId } : {}), delivery_base: preflight.head, ...(item.pushTo ? { push_to: item.pushTo } : {}), ...(reportPath ? { report_path: reportPath, local_changes: preflight.localChanges } : {}), error: message };
 		}
 	}
 
@@ -337,9 +353,14 @@ export class VisibleWorkerRuntime {
 		try {
 			const output = await this.#run("herdr", ["agent", "read", record.pane_id, "--source", "recent-unwrapped", "--lines", "200", "--format", "text"]);
 			if (record.generation !== generation || !this.#isCurrent(record)) return;
-			const dirty = await this.#run("git", ["-C", record.worktree, "status", "--porcelain=v1", "--untracked-files=all"]);
-			if (dirty) throw new Error("Worker worktree contains uncommitted changes");
-			const outcome = record.push_to ? await this.#push(record, output) : await this.#queueLocal(record, output);
+			let outcome: Record<string, unknown>;
+			if (record.kind === "scout") {
+				outcome = await this.#completeScout(record, output);
+			} else {
+				const dirty = await this.#run("git", ["-C", record.worktree, "status", "--porcelain=v1", "--untracked-files=all"]);
+				if (dirty) throw new Error("Worker worktree contains uncommitted changes");
+				outcome = record.push_to ? await this.#push(record, output) : await this.#queueLocal(record, output);
+			}
 			if (record.generation === generation && this.#isCurrent(record)) await this.#finish(record, outcome);
 		} catch (error) {
 			if (record.generation !== generation || !this.#isCurrent(record)) return;
@@ -348,6 +369,18 @@ export class VisibleWorkerRuntime {
 			this.#notify(this.#terminal(record, "failed", "", record.error));
 		}
 	}
+	async #completeScout(record: WorkerRecord, output: string): Promise<Record<string, unknown>> {
+		const path = record.report_path;
+		if (!path) throw new Error("Scout report path is missing");
+		let info;
+		try { info = await lstat(path); } catch (error) { throw new Error(`Scout report is missing or unreadable: ${path}: ${errorMessage(error)}`); }
+		if (!info.isFile()) throw new Error(`Scout report is not a regular file: ${path}`);
+		let report: string;
+		try { report = await readFile(path, "utf8"); } catch (error) { throw new Error(`Scout report is unreadable: ${path}: ${errorMessage(error)}`); }
+		if (!report.trim()) throw new Error(`Scout report is empty: ${path}`);
+		return this.#terminal(record, "completed_with_report", output, undefined, undefined, report);
+	}
+
 
 	async #push(record: WorkerRecord, output: string) {
 		await this.#run("git", ["-C", record.worktree, "push", "origin", `HEAD:refs/heads/${record.push_to}`]);
@@ -409,8 +442,8 @@ export class VisibleWorkerRuntime {
 		}
 	}
 
-	#terminal(record: WorkerRecord, status: "merged" | "pushed" | "no_changes" | "blocked" | "failed", output: string, error?: string, branch?: string): Record<string, unknown> {
-		return { project: record.project, name: record.name, status, output, ...(branch ? { branch } : {}), ...(error ? { error } : {}), workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id };
+	#terminal(record: WorkerRecord, status: "merged" | "pushed" | "no_changes" | "completed_with_report" | "blocked" | "failed", output: string, error?: string, branch?: string, report?: string): Record<string, unknown> {
+		return { kind: record.kind, project: record.project, name: record.name, status, output, ...(branch ? { branch } : {}), ...(report ? { report } : {}), ...(record.report_path ? { report_path: record.report_path, local_changes: record.local_changes ?? "" } : {}), ...(error ? { error } : {}), workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id };
 	}
 
 	#notify(outcome: Record<string, unknown>): void {
@@ -419,7 +452,7 @@ export class VisibleWorkerRuntime {
 	}
 
 	#publicRecord(record: WorkerRecord): Record<string, unknown> {
-		return { project: record.project, name: record.name, status: record.status, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id, delivery_base: record.delivery_base, ...(record.push_to ? { push_to: record.push_to } : {}), ...(record.error ? { error: record.error } : {}) };
+		return { kind: record.kind, project: record.project, name: record.name, status: record.status, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id, delivery_base: record.delivery_base, ...(record.push_to ? { push_to: record.push_to } : {}), ...(record.report_path ? { report_path: record.report_path, local_changes: record.local_changes ?? "" } : {}), ...(record.error ? { error: record.error } : {}) };
 	}
 
 	async #agent(pane: string, signal?: AbortSignal): Promise<{ identity: string; status: AgentState | string }> {
@@ -464,8 +497,11 @@ export default function visibleWorkersExtension(pi: ExtensionAPI): void {
 	});
 	pi.registerTool({
 		name: "task", label: "Visible Workers", loadMode: "essential", approval: "exec",
-		description: "Launch full OMP worker agents for a registered project in visible Herdr tabs and isolated Treehouse worktrees. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
-		parameters: z.object({ project: z.string(), context: z.string(), tasks: z.array(z.object({ name: z.string(), task: z.string(), pushTo: z.string().optional() })).min(1).max(32) }),
+		description: "Launch implementation or scout OMP workers for a registered project in visible Herdr tabs and isolated Treehouse worktrees. Every assignment declares its kind. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
+		parameters: z.object({ project: z.string(), context: z.string(), tasks: z.array(z.discriminatedUnion("kind", [
+			z.object({ kind: z.literal("implementation"), name: z.string(), task: z.string(), pushTo: z.string().optional() }).strict(),
+			z.object({ kind: z.literal("scout"), name: z.string(), task: z.string() }).strict(),
+		])).min(1).max(32) }),
 		execute: async (_id: string, params: TaskParams, signal?: AbortSignal) => runtime.runTask(params, signal),
 	});
 	pi.registerTool({

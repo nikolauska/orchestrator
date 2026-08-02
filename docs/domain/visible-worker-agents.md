@@ -1,34 +1,46 @@
 # Visible worker agents
 
-The root orchestrator manages named local projects and delegates their work to separate OMP worker agents. Workers run in visible Herdr tabs while the root remains the operator's default point of contact.
+The root orchestrator manages named local projects and remains the operator's default point of contact. It answers from established evidence or delegates one explicit kind of assignment to a visible, isolated OMP worker.
 
 ## Roles
 
-- **Root orchestrator** — the OMP agent that manages project registrations, divides work, launches workers, relays plan changes, and receives outcomes.
-- **Registered project** — an existing local Git repository known to the root by a stable name. Unregistering a project removes only that name; it never deletes or changes the repository.
-- **Worker agent** — a full OMP agent that performs one assignment directly. A worker does not delegate to subagents.
+- **Root orchestrator** — resolves the target project, answers directly when established evidence is sufficient, selects worker assignments, relays changes, and presents outcomes.
+- **Registered project** — an existing local Git repository known by a stable name. Unregistering it removes only that name; it never changes the repository or deletes retained reports.
+- **Implementation worker** — performs an authorized project change directly, verifies it, and commits it for delivery.
+- **Scout** — investigates, plans, audits, or diagnoses without delivering project changes. Material uncertainty also leads the root to use a scout rather than guess.
 
-## Workflow
+Workers run in visible Herdr tabs and do not delegate to subagents.
 
-The root must start inside Herdr with its managed OMP integration installed (`herdr integration install omp`). That integration supplies the current pane, workspace, and socket context when the OMP session starts.
+## Selecting work
 
-1. The user registers a local Git repository once, then refers to it by name in later work.
-2. The root selects one registered project and may launch several workers for it at once.
-3. Every worker receives its own Treehouse worktree, preventing concurrent workers from editing the same checkout.
-4. Workers use the project's normal OMP rules, tools, model, and approval settings.
-5. The user continues working with the root. When a plan changes, the root messages only the affected workers. The operator can still interact with a worker's Herdr tab when direct recovery or inspection is useful.
-6. A finished, blocked, or failed worker wakes the root automatically with its outcome. The root can continue coordinating without the user polling worker tabs.
+The root answers informational requests directly when the conversation, a prior authoritative report, or other established evidence already resolves them. It launches scouts for explicit investigation, planning, audits, diagnosis, or material uncertainty. Recommendations in a scout report do not authorize implementation; any later implementation requires a fresh, separately authorized assignment.
 
-## Delivery
+Every launched assignment explicitly identifies itself as implementation or scout. A scout cannot request a branch push, so it cannot accidentally enter an implementation delivery path.
 
-Local delivery is the default. A worker commits its changes; the registered project branch fast-forwards to that commit. If another worker has advanced the branch, the completed work is rebased onto the new head and then fast-forwarded. A conflict stops delivery without changing the registered checkout.
+## Workspace and revision
 
-A task may instead request a branch push. Its committed work is pushed to the requested branch on `origin`, and the registered checkout is not changed. This does not create a pull request.
+Every worker receives a disposable Treehouse worktree. An implementation worker follows the project's delivery safeguards.
 
-Successful worker tabs close and their Treehouse leases return to the pool. A successful worker that made no changes also closes cleanly.
+A scout researches the exact committed `HEAD` captured at launch. It can launch while the registered checkout has local changes or a detached `HEAD`. Local changes are excluded from the scout worktree and disclosed to the scout, while the exact commit remains identified. The scout may make scratch edits or commits inside its disposable worktree to support research; none of that work is delivered to the registered project or a remote branch.
 
-## Failures and recovery
+## Scout report
 
-A blocked worker, failed launch after OMP may have started, uncommitted change, integration conflict, or uncertain cleanup keeps its exact Herdr tab and Treehouse worktree. The root reports those locations and can send new instructions to a retained worker. Direct tab interaction remains available when root-mediated recovery is insufficient.
+Each scout writes a durable standalone Markdown report in the Orchestrator's ignored operational state outside the registered project. The report is authoritative and flexibly covers the useful investigation, findings, evidence, recommendations, and unresolved decisions without required headings or a fixed template. The scout also returns a concise terminal conclusion.
 
-Worker control is scoped to the current root OMP process. If the root restarts, workers and leases remain safe and visible, but watcher and messaging state is not reconstructed automatically.
+Successful settlement records `completed_with_report`; the root presents this to the user as **Completed with report**, returning both the report and concise conclusion. Unresolved decisions remain part of the completed report and are surfaced by the root without a separate decision record.
+
+Reports are never deleted automatically, including when their registered project is unregistered.
+
+## Implementation delivery
+
+Local delivery remains the default for implementation workers. The worker commits its changes and the registered project branch fast-forwards to that commit. If another implementation worker advances the branch first, completed work rebases onto the new head before the fast-forward. A conflict stops delivery without changing the registered checkout.
+
+An implementation assignment may instead request a branch push. Its committed work is pushed to the requested branch on `origin`, and the registered checkout is unchanged. This does not create a pull request.
+
+## Completion, failures, and recovery
+
+A successful implementation worker or scout closes its tab and returns its disposable worktree. Scout scratch changes do not prevent this cleanup because they are never delivery candidates.
+
+A scout fails settlement when its report is missing, empty, unreadable, or not a regular file. The failed scout's exact Herdr tab and Treehouse worktree remain available for recovery. Blocked workers, failed launches after OMP may have started, uncommitted implementation changes, delivery conflicts, and uncertain cleanup are retained the same way.
+
+Worker control belongs to the current root OMP process. If the root restarts, workers and leases remain safe and visible, but watcher and messaging state is not reconstructed automatically.

@@ -27,6 +27,7 @@ class FakeExec {
 	readonly status = new Map<string, string>();
 	readonly workerHeads = new Map<string, string>();
 	readonly dirtyWorkers = new Set<string>();
+	readonly outputs = new Map<string, string>();
 	projectHead = "base";
 	projectBranch = "main";
 	projectDirty = false;
@@ -73,7 +74,10 @@ class FakeExec {
 			const pane = args.at(-1)!;
 			return this.#ok(JSON.stringify({ result: { agent: { agent: "omp", agent_status: this.status.get(pane) ?? "working" } } }));
 		}
-		if (command === "herdr" && args.includes("agent") && args.includes("read")) return this.#ok(`output ${args[args.indexOf("read") + 1]}`);
+		if (command === "herdr" && args.includes("agent") && args.includes("read")) {
+			const pane = args[args.indexOf("read") + 1];
+			return this.#ok(this.outputs.get(pane) ?? `output ${pane}`);
+		}
 		if (command === "herdr" && args.includes("agent") && args.includes("wait")) {
 			const pane = args[args.indexOf("wait") + 1];
 			if (args.includes("--timeout")) return this.#ok("{}");
@@ -150,13 +154,24 @@ async function launchedPair() {
 	const messages: Array<{ message: string; options: unknown }> = [];
 	const instance = runtime(root, fake, messages);
 	await register(instance, project);
-	const result = await instance.runTask({ project: "fixture", context: "shared", tasks: [{ name: "alpha", task: "A" }, { name: "beta", task: "B" }] });
+	const result = await instance.runTask({ project: "fixture", context: "shared", tasks: [{ kind: "implementation", name: "alpha", task: "A" }, { kind: "implementation", name: "beta", task: "B" }] });
 	return { root, project, fake, messages, instance, result };
+}
+
+async function launchedScout() {
+	const { root, project } = await fixtureRoot();
+	const fake = new FakeExec(project);
+	const messages: Array<{ message: string; options: unknown }> = [];
+	const instance = runtime(root, fake, messages);
+	await register(instance, project);
+	const result = await instance.runTask({ project: "fixture", context: "shared", tasks: [{ kind: "scout", name: "scout", task: "Investigate" }] });
+	const launched = (result.details as Array<Record<string, unknown>>)[0];
+	return { root, project, fake, messages, instance, result, launched, reportPath: launched.report_path as string };
 }
 
 async function eventually(assertion: () => void) {
 	for (let attempt = 0; attempt < 100; attempt++) {
-		try { assertion(); return; } catch { await new Promise<void>(queueMicrotask); }
+		try { assertion(); return; } catch { await new Promise<void>(setImmediate); }
 	}
 	assertion();
 }
@@ -194,11 +209,11 @@ describe("launch and control", () => {
 		const { root, project } = await fixtureRoot();
 		const fake = new FakeExec(project);
 		const missing = runtime(root, fake, [], {});
-		const unknown = await missing.runTask({ project: "missing", context: "", tasks: [{ name: "one", task: "work" }] });
+		const unknown = await missing.runTask({ project: "missing", context: "", tasks: [{ kind: "implementation", name: "one", task: "work" }] });
 		expect(unknown.isError).toBe(true);
 		expect(unknown.content[0].text).toContain("Registered: (none)");
 		await register(missing, project);
-		expect((await missing.runTask({ project: "fixture", context: "", tasks: [{ name: "one", task: "work" }] })).isError).toBe(true);
+		expect((await missing.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "one", task: "work" }] })).isError).toBe(true);
 		expect(fake.calls.some(call => call.command === "treehouse" || call.command === "herdr")).toBe(false);
 	});
 
@@ -207,7 +222,7 @@ describe("launch and control", () => {
 		const fake = new FakeExec(project);
 		const instance = runtime(root, fake, []);
 		await register(instance, project);
-		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ name: "one", task: "work" }] });
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "one", task: "work" }] });
 		expect(result.isError).toBeUndefined();
 		expect(fake.calls.filter(call => call.command === "herdr").every(call => !call.args.includes("--session"))).toBe(true);
 		expect(fake.calls.find(call => call.command === "herdr" && call.args.includes("create"))?.args).toContain("workspace");
@@ -229,7 +244,7 @@ describe("launch and control", () => {
 		fake.promptStallsOnce = true;
 		const instance = runtime(root, fake, []);
 		await register(instance, project);
-		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ name: "one", task: "work" }] });
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "one", task: "work" }] });
 		expect(result.isError).toBeUndefined();
 		const readiness = fake.calls.findIndex(call => call.command === "herdr" && call.args.includes("wait-output"));
 		const start = fake.calls.findIndex(call => call.command === "herdr" && call.args.includes("start"));
@@ -246,6 +261,91 @@ describe("launch and control", () => {
 		const result = await instance.runWorkers({ op: "send", names: ["alpha", "missing"], message: "changed" });
 		expect(result.isError).toBe(true);
 		expect(fake.calls.length).toBe(before);
+	});
+
+	test("keeps implementation local-delivery preflight strict", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+		fake.projectDirty = true;
+		expect((await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "dirty", task: "work" }] })).content[0].text).toContain("must be clean");
+		fake.projectDirty = false;
+		fake.projectBranch = "";
+		expect((await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "detached", task: "work" }] })).content[0].text).toContain("named branch");
+		expect(fake.calls.some(call => call.command === "treehouse" && call.args[0] === "get")).toBe(false);
+	});
+});
+
+describe("scout reports", () => {
+	test("launches from dirty detached HEAD and discloses excluded local changes", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		fake.projectHead = "abc123";
+		fake.projectBranch = "";
+		fake.projectDirty = true;
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "scout", name: "inspect", task: "Investigate" }] });
+
+		expect(result.isError).toBeUndefined();
+		expect(fake.calls.find(call => call.command === "git" && call.args.includes("reset"))?.args).toEqual(["-C", join(project, ".treehouse-inspect"), "reset", "--hard", "abc123"]);
+		expect(fake.calls.some(call => call.command === "git" && call.args[0] === "symbolic-ref")).toBe(false);
+		const prompt = fake.calls.find(call => call.command === "herdr" && call.args.includes("prompt"))?.args.join(" ") ?? "";
+		expect(prompt).toContain("exact committed revision abc123");
+		expect(prompt).toContain("local changes are excluded");
+		expect(prompt).toContain("dirty");
+	});
+
+	test("rejects scout push before acquiring resources", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "scout", name: "inspect", task: "Investigate", pushTo: "forbidden" } as never] });
+
+		expect(result.isError).toBe(true);
+		expect(result.content[0].text).toContain("cannot set pushTo");
+		expect(fake.calls.some(call => call.command === "treehouse")).toBe(false);
+	});
+
+	test("keeps a flexible report while discarding scratch work", async () => {
+		const { fake, messages, instance, reportPath } = await launchedScout();
+		const report = "# Evidence-led result\n\nFinding stands.\n\nOpen decision: choose A or B.";
+		await writeFile(reportPath, report);
+		fake.outputs.set("pane:scout", "Concise conclusion.");
+		const worktree = [...fake.workerHeads.keys()][0];
+		fake.dirtyWorkers.add(worktree);
+
+		fake.settle("scout");
+		await eventually(() => expect(messages.length).toBe(1));
+
+		const outcome = JSON.parse(messages[0].message.slice("Visible worker result:\n".length));
+		expect(outcome).toMatchObject({ kind: "scout", status: "completed_with_report", output: "Concise conclusion.", report, report_path: reportPath });
+		expect(fake.calls.some(call => call.command === "git" && (call.args.includes("merge") || call.args.includes("push")))).toBe(false);
+		expect(fake.calls.some(call => call.command === "herdr" && call.args.includes("close"))).toBe(true);
+		expect(fake.calls.some(call => call.command === "treehouse" && call.args[0] === "return")).toBe(true);
+		await instance.runProjects({ op: "remove", name: "fixture" });
+		expect(await readFile(reportPath, "utf8")).toBe(report);
+	});
+
+	test("retains scouts with missing, empty, or non-regular reports", async () => {
+		for (const [, prepare, message] of [
+			["missing", async (_path: string) => {}, "missing or unreadable"],
+			["empty", async (path: string) => { await writeFile(path, " \n"); }, "empty"],
+			["directory", async (path: string) => { await mkdir(path); }, "not a regular file"],
+		] as const) {
+			const launched = await launchedScout();
+			await prepare(launched.reportPath);
+			launched.fake.settle("scout");
+			await eventually(() => expect(launched.messages.length).toBe(1));
+			expect(launched.messages[0].message).toContain(message);
+			expect((await launched.instance.runWorkers({ op: "list" })).details).toHaveLength(1);
+			expect(launched.fake.calls.some(call => call.command === "herdr" && call.args.includes("close"))).toBe(false);
+			expect(launched.fake.calls.some(call => call.command === "treehouse" && call.args[0] === "return")).toBe(false);
+		}
 	});
 });
 
@@ -274,7 +374,7 @@ describe("delivery", () => {
 		const messages: Array<{ message: string; options: unknown }> = [];
 		const instance = runtime(root, fake, messages);
 		await register(instance, project);
-		await instance.runTask({ project: "fixture", context: "", tasks: [{ name: "push", task: "publish", pushTo: "feature/result" }] });
+		await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "push", task: "publish", pushTo: "feature/result" }] });
 		fake.settle("push");
 		await eventually(() => expect(messages.length).toBe(1));
 		const push = fake.calls.find(call => call.command === "git" && call.args.includes("push"));
