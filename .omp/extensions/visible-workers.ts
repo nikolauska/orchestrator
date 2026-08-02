@@ -19,7 +19,6 @@ type AgentState = "idle" | "working" | "blocked" | "done";
 type Preflight = {
 	project: string;
 	projectPath: string;
-	session: string;
 	workspace: string;
 	head: string;
 	branch?: string;
@@ -31,7 +30,6 @@ type WorkerRecord = {
 	projectPath: string;
 	name: string;
 	status: "working" | "blocked" | "failed";
-	session: string;
 	workspace_id: string;
 	tab_id: string;
 	pane_id: string;
@@ -219,9 +217,9 @@ export class VisibleWorkerRuntime {
 		const projects = await this.#readProjects();
 		const projectPath = projects[params.project];
 		if (!projectPath) throw new Error(`Unknown registered project: ${params.project}. Registered: ${Object.keys(projects).sort().join(", ") || "(none)"}`);
-		const session = this.#env.HERDR_SESSION;
-		const workspace = this.#env.HERDR_WORKSPACE_ID;
-		if (!session || !workspace) throw new Error("HERDR_SESSION and HERDR_WORKSPACE_ID are required");
+		const pane = this.#env.HERDR_PANE_ID;
+		const workspace = pane?.split(":", 1)[0];
+		if (this.#env.HERDR_ENV !== "1" || !this.#env.HERDR_SOCKET_PATH || !workspace) throw new Error("Herdr's OMP integration is required; run `herdr integration install omp` and restart OMP");
 		await Promise.all(["herdr", "treehouse", "git", "omp"].map(command => this.#run(command, ["--version"], { signal })));
 		let canonical: string;
 		try { canonical = await realpath(projectPath); } catch { throw new Error(`Registered project path is missing: ${projectPath}`); }
@@ -236,7 +234,7 @@ export class VisibleWorkerRuntime {
 			branch = (await this.#run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: canonical, signal })).trim();
 			if (!branch) throw new Error("Local delivery requires a named branch");
 		}
-		return { project: params.project, projectPath: canonical, session, workspace, head, branch };
+		return { project: params.project, projectPath: canonical, workspace, head, branch };
 	}
 
 	async #launch(preflight: Preflight, context: string, item: TaskItem, signal?: AbortSignal): Promise<Record<string, unknown>> {
@@ -253,21 +251,21 @@ export class VisibleWorkerRuntime {
 			if (!leasePath || !isAbsolute(leasePath) || !leaseId || !LEASE_ID.test(leaseId) || echoedHolder !== leaseHolder) throw new Error("treehouse get returned an unrecognized lease");
 			lease = { path: leasePath, lease_id: leaseId, lease_holder: echoedHolder };
 			await this.#run("git", ["-C", lease.path, "reset", "--hard", preflight.head], { signal });
-			const tabJson = parseJson(await this.#run("herdr", ["--session", preflight.session, "tab", "create", "--workspace", preflight.workspace, "--cwd", lease.path, "--label", item.name, "--no-focus"], { signal }), "herdr tab create");
+			const tabJson = parseJson(await this.#run("herdr", ["tab", "create", "--workspace", preflight.workspace, "--cwd", lease.path, "--label", item.name, "--no-focus"], { signal }), "herdr tab create");
 			tabId = stringAt(tabJson, ["result", "tab", "tab_id"]);
 			paneId = stringAt(tabJson, ["result", "root_pane", "pane_id"]);
 			if (!tabId || !paneId) throw new Error("herdr tab create returned unrecognized identifiers");
 			// Tab creation returns before the startup shell necessarily reaches its prompt; agent start rejects a transiently busy pane.
-			await this.#run("herdr", ["--session", preflight.session, "pane", "wait-output", paneId, "--regex", "[#$>]\\s*$", "--source", "visible", "--lines", "10", "--timeout", "5000"], { signal });
+			await this.#run("herdr", ["pane", "wait-output", paneId, "--regex", "[#$>]\\s*$", "--source", "visible", "--lines", "10", "--timeout", "5000"], { signal });
 			ompMayHaveStarted = true;
-			await this.#run("herdr", ["--session", preflight.session, "agent", "start", item.name, "--kind", "omp", "--pane", paneId, "--", "--cwd", lease.path], { signal });
+			await this.#run("herdr", ["agent", "start", item.name, "--kind", "omp", "--pane", paneId, "--", "--cwd", lease.path], { signal });
 			const prompt = `${context}\n\n${PROMPT_SUFFIX}\n\n${item.task}`;
-			await this.#prompt(preflight.session, paneId, prompt, signal);
-			const agent = await this.#agent(preflight.session, paneId, signal);
+			await this.#prompt(paneId, prompt, signal);
+			const agent = await this.#agent(paneId, signal);
 			if (agent.identity !== "omp") throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
 			const record: WorkerRecord = {
 				project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: agent.status === "blocked" ? "blocked" : "working",
-				session: preflight.session, workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path,
+				workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path,
 				lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, generation: 0,
 			};
 			this.#workers.set(item.name, record);
@@ -279,13 +277,13 @@ export class VisibleWorkerRuntime {
 		} catch (error) {
 			const message = errorMessage(error);
 			if (!ompMayHaveStarted) {
-				if (tabId) await this.#bestEffort("herdr", ["--session", preflight.session, "tab", "close", tabId], signal);
+				if (tabId) await this.#bestEffort("herdr", ["tab", "close", tabId], signal);
 				if (lease) await this.#bestEffort("treehouse", ["return", "--force", "--if-lease-id", lease.lease_id, "--if-lease-holder", lease.lease_holder, lease.path], signal);
 			} else if (lease && tabId && paneId) {
-				const record: WorkerRecord = { project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: "failed", session: preflight.session, workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path, lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, error: message, generation: 0 };
+				const record: WorkerRecord = { project: preflight.project, projectPath: preflight.projectPath, name: item.name, status: "failed", workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId, worktree: lease.path, lease_id: lease.lease_id, lease_holder: lease.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, error: message, generation: 0 };
 				this.#workers.set(item.name, record);
 			}
-			return { project: preflight.project, name: item.name, status: "failed", ...(lease ? { worktree: lease.path, lease_id: lease.lease_id } : {}), ...(tabId ? { session: preflight.session, workspace_id: preflight.workspace, tab_id: tabId } : {}), ...(paneId ? { pane_id: paneId } : {}), delivery_base: preflight.head, ...(item.pushTo ? { push_to: item.pushTo } : {}), error: message };
+			return { project: preflight.project, name: item.name, status: "failed", ...(lease ? { worktree: lease.path, lease_id: lease.lease_id } : {}), ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}), ...(paneId ? { pane_id: paneId } : {}), delivery_base: preflight.head, ...(item.pushTo ? { push_to: item.pushTo } : {}), error: message };
 		}
 	}
 
@@ -293,12 +291,12 @@ export class VisibleWorkerRuntime {
 		record.generation++;
 		record.watch?.abort();
 		try {
-			await this.#prompt(record.session, record.pane_id, message, signal);
+			await this.#prompt(record.pane_id, message, signal);
 		} catch (error) {
 			record.error = errorMessage(error);
 		}
 		try {
-			const agent = await this.#agent(record.session, record.pane_id, signal);
+			const agent = await this.#agent(record.pane_id, signal);
 			if (agent.identity !== "omp") throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
 			if (agent.status === "working") { record.status = "working"; record.error = undefined; this.#watch(record); }
 			else if (agent.status === "idle" || agent.status === "done") void this.#settle(record, agent.status);
@@ -318,9 +316,9 @@ export class VisibleWorkerRuntime {
 		record.watch = controller;
 		void (async () => {
 			try {
-				await this.#run("herdr", ["--session", record.session, "agent", "wait", record.pane_id, "--until", "idle", "--until", "done", "--until", "blocked"], { signal: controller.signal });
+				await this.#run("herdr", ["agent", "wait", record.pane_id, "--until", "idle", "--until", "done", "--until", "blocked"], { signal: controller.signal });
 				if (!this.#isCurrent(record) || record.generation !== generation) return;
-				const agent = await this.#agent(record.session, record.pane_id, controller.signal);
+				const agent = await this.#agent(record.pane_id, controller.signal);
 				if (!this.#isCurrent(record) || record.generation !== generation) return;
 				if (agent.status === "idle" || agent.status === "done") await this.#settle(record, agent.status);
 				else if (agent.status === "blocked") { record.status = "blocked"; this.#notify(this.#terminal(record, "blocked", "")); }
@@ -337,7 +335,7 @@ export class VisibleWorkerRuntime {
 	async #settle(record: WorkerRecord, _state: "idle" | "done"): Promise<void> {
 		const generation = ++record.generation;
 		try {
-			const output = await this.#run("herdr", ["--session", record.session, "agent", "read", record.pane_id, "--source", "recent-unwrapped", "--lines", "200", "--format", "text"]);
+			const output = await this.#run("herdr", ["agent", "read", record.pane_id, "--source", "recent-unwrapped", "--lines", "200", "--format", "text"]);
 			if (record.generation !== generation || !this.#isCurrent(record)) return;
 			const dirty = await this.#run("git", ["-C", record.worktree, "status", "--porcelain=v1", "--untracked-files=all"]);
 			if (dirty) throw new Error("Worker worktree contains uncommitted changes");
@@ -399,7 +397,7 @@ export class VisibleWorkerRuntime {
 	async #finish(record: WorkerRecord, outcome: Record<string, unknown>): Promise<void> {
 		if (!this.#isCurrent(record)) return;
 		try {
-			await this.#run("herdr", ["--session", record.session, "tab", "close", record.tab_id]);
+			await this.#run("herdr", ["tab", "close", record.tab_id]);
 			if (!this.#isCurrent(record)) return;
 			await this.#run("treehouse", ["return", "--force", "--if-lease-id", record.lease_id, "--if-lease-holder", record.lease_holder, record.worktree]);
 			this.#workers.delete(record.name);
@@ -412,7 +410,7 @@ export class VisibleWorkerRuntime {
 	}
 
 	#terminal(record: WorkerRecord, status: "merged" | "pushed" | "no_changes" | "blocked" | "failed", output: string, error?: string, branch?: string): Record<string, unknown> {
-		return { project: record.project, name: record.name, status, output, ...(branch ? { branch } : {}), ...(error ? { error } : {}), session: record.session, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id };
+		return { project: record.project, name: record.name, status, output, ...(branch ? { branch } : {}), ...(error ? { error } : {}), workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id };
 	}
 
 	#notify(outcome: Record<string, unknown>): void {
@@ -421,22 +419,22 @@ export class VisibleWorkerRuntime {
 	}
 
 	#publicRecord(record: WorkerRecord): Record<string, unknown> {
-		return { project: record.project, name: record.name, status: record.status, session: record.session, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id, delivery_base: record.delivery_base, ...(record.push_to ? { push_to: record.push_to } : {}), ...(record.error ? { error: record.error } : {}) };
+		return { project: record.project, name: record.name, status: record.status, workspace_id: record.workspace_id, tab_id: record.tab_id, pane_id: record.pane_id, worktree: record.worktree, lease_id: record.lease_id, delivery_base: record.delivery_base, ...(record.push_to ? { push_to: record.push_to } : {}), ...(record.error ? { error: record.error } : {}) };
 	}
 
-	async #agent(session: string, pane: string, signal?: AbortSignal): Promise<{ identity: string; status: AgentState | string }> {
-		const value = parseJson(await this.#run("herdr", ["--session", session, "agent", "get", pane], { signal }), "herdr agent get");
+	async #agent(pane: string, signal?: AbortSignal): Promise<{ identity: string; status: AgentState | string }> {
+		const value = parseJson(await this.#run("herdr", ["agent", "get", pane], { signal }), "herdr agent get");
 		return { identity: stringAt(value, ["result", "agent", "agent"]) ?? "", status: stringAt(value, ["result", "agent", "agent_status"]) ?? "" };
 	}
 
-	async #prompt(session: string, pane: string, message: string, signal?: AbortSignal): Promise<void> {
+	async #prompt(pane: string, message: string, signal?: AbortSignal): Promise<void> {
 		try {
-			await this.#run("herdr", ["--session", session, "agent", "prompt", pane, message, "--wait", "--until", "working", "--until", "done", "--until", "blocked", "--timeout", "30000"], { signal });
+			await this.#run("herdr", ["agent", "prompt", pane, message, "--wait", "--until", "working", "--until", "done", "--until", "blocked", "--timeout", "30000"], { signal });
 		} catch (error) {
 			if (!errorMessage(error).includes("agent_prompt_stalled")) throw error;
 			// Herdr has already typed the text when startup stalls; retry only Enter to avoid duplicating the assignment.
-			await this.#run("herdr", ["--session", session, "agent", "send-keys", pane, "enter"], { signal });
-			await this.#run("herdr", ["--session", session, "agent", "wait", pane, "--until", "working", "--until", "done", "--until", "blocked", "--timeout", "5000"], { signal });
+			await this.#run("herdr", ["agent", "send-keys", pane, "enter"], { signal });
+			await this.#run("herdr", ["agent", "wait", pane, "--until", "working", "--until", "done", "--until", "blocked", "--timeout", "5000"], { signal });
 		}
 	}
 

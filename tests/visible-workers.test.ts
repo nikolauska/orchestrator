@@ -130,7 +130,7 @@ class FakeExec {
 	#fail(stderr: string): ExecResult { return { stdout: "", stderr, code: 1 }; }
 }
 
-function runtime(root: string, fake: FakeExec, messages: Array<{ message: string; options: unknown }>, env: Record<string, string | undefined> = { HERDR_SESSION: "session", HERDR_WORKSPACE_ID: "workspace" }) {
+function runtime(root: string, fake: FakeExec, messages: Array<{ message: string; options: unknown }>, env: Record<string, string | undefined> = { HERDR_ENV: "1", HERDR_SOCKET_PATH: "socket", HERDR_PANE_ID: "workspace:root" }) {
 	const deps: RuntimeDeps = {
 		exec: fake.exec,
 		sendMessage: (message, options) => messages.push({ message, options }),
@@ -200,6 +200,17 @@ describe("launch and control", () => {
 		await register(missing, project);
 		expect((await missing.runTask({ project: "fixture", context: "", tasks: [{ name: "one", task: "work" }] })).isError).toBe(true);
 		expect(fake.calls.some(call => call.command === "treehouse" || call.command === "herdr")).toBe(false);
+	});
+
+	test("uses Herdr's managed process context without legacy session variables", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ name: "one", task: "work" }] });
+		expect(result.isError).toBeUndefined();
+		expect(fake.calls.filter(call => call.command === "herdr").every(call => !call.args.includes("--session"))).toBe(true);
+		expect(fake.calls.find(call => call.command === "herdr" && call.args.includes("create"))?.args).toContain("workspace");
 	});
 
 	test("launches concurrently and steers only named workers", async () => {

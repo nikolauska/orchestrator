@@ -10,6 +10,8 @@ The root orchestrator manages named local projects and delegates their work to s
 
 ## Workflow
 
+The root must start inside Herdr with its managed OMP integration installed (`herdr integration install omp`). That integration supplies the current pane, workspace, and socket context when the OMP session starts.
+
 1. The user registers a local Git repository once, then refers to it by name in later work.
 2. The root selects one registered project and may launch several workers for it at once.
 3. Every worker receives its own Treehouse worktree, preventing concurrent workers from editing the same checkout.
