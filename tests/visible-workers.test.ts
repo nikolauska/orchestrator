@@ -260,6 +260,24 @@ describe("launch and control", () => {
 		expect((result.details as Array<Record<string, unknown>>).find(worker => worker.name === "fast")?.role).toBe("smol");
 	});
 
+	test("rejects empty role and pushTo before acquiring resources", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+
+		for (const [item, expected] of [
+			[{ kind: "scout" as const, name: "empty-role", task: "work", role: "" }, "Invalid OMP model role"],
+			[{ kind: "implementation" as const, name: "empty-push", task: "work", pushTo: "" }, "pushTo for empty-push must be non-empty"],
+		] as const) {
+			const before = fake.calls.length;
+			const result = await instance.runTask({ project: "fixture", context: "", tasks: [item] });
+			expect(result.isError).toBe(true);
+			expect(result.content[0].text).toContain(expected);
+			expect(fake.calls.slice(before).some(call => call.command === "treehouse" || call.command === "herdr")).toBe(false);
+		}
+	});
+
 	test("launches concurrently and steers only named workers", async () => {
 		const { fake, instance, result } = await launchedPair();
 		expect(result.content[0].text).toStartWith("Visible workers launched:\n");

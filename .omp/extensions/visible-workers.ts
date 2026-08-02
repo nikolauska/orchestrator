@@ -236,11 +236,11 @@ export class VisibleWorkerRuntime {
 			names.add(item.name);
 			if (item.kind !== "implementation" && item.kind !== "scout") throw new Error(`Invalid task kind for ${item.name}: ${item.kind}`);
 			if (typeof item.task !== "string" || !item.task.trim()) throw new Error(`Task for ${item.name} must be non-empty`);
-			if (item.role !== undefined && item.role !== "" && (typeof item.role !== "string" || !NAME.test(item.role))) throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
+			if (item.role !== undefined && (typeof item.role !== "string" || !NAME.test(item.role))) throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
 			if (independent && item.kind !== "scout") throw new Error("Independent scope accepts scout tasks only");
 			if (independent && item.pushTo !== undefined) throw new Error(`Independent scout ${item.name} cannot set pushTo`);
 			if (!independent && item.kind === "scout" && item.pushTo !== undefined) throw new Error(`Scout task ${item.name} cannot set pushTo`);
-			if (!independent && item.pushTo !== undefined && item.pushTo !== "" && !item.pushTo.trim()) throw new Error(`pushTo for ${item.name} must be non-empty`);
+			if (!independent && item.pushTo !== undefined && (typeof item.pushTo !== "string" || !item.pushTo.trim())) throw new Error(`pushTo for ${item.name} must be non-empty`);
 		}
 	}
 
