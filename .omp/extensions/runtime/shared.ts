@@ -9,7 +9,7 @@ export type RuntimeDeps = {
 };
 
 export type ToolResult = { content: [{ type: "text"; text: string }]; isError?: boolean; details?: unknown };
-export type ProjectParams = { op: "list" } | { op: "add"; name: string; path: string } | { op: "remove"; name: string };
+export type ProjectParams = { op: "list" } | { op: "add"; name: string; path: string } | { op: "create"; name: string; path?: string } | { op: "remove"; name: string } | { op: "set-root"; path: string };
 export type TaskKind = "implementation" | "scout";
 export type TaskItem = { kind: TaskKind; name: string; task: string; role?: string; pushTo?: string };
 export type ProjectTaskParams = { project: string; context: string; tasks: TaskItem[] };

@@ -5,7 +5,7 @@ The root orchestrator remains the operator's default point of contact. It answer
 ## Roles
 
 - **Root orchestrator** — resolves the assignment scope, answers directly when established evidence is sufficient, selects worker assignments, relays changes, and presents outcomes.
-- **Registered project** — an existing local Git repository known by a stable name. Unregistering it removes only that name; it never changes the repository or deletes retained reports.
+- **Registered project** — a local Git repository known by a stable name. The root can create and register one in a single action. A configured, existing projects root is required for the default destination; an explicit destination instead creates that exact new folder. Creation refuses existing destinations and retains a newly created folder when Git setup or registration fails, so operators can inspect partial work rather than lose it.
 - **Implementation worker** — performs an authorized registered-project change directly, verifies it, and commits it for delivery.
 - **Registered-project scout** — investigates, plans, audits, or diagnoses against one project's captured revision without delivering project changes.
 - **Project-independent scout** — researches outside registered-project scope without a project checkout or revision.

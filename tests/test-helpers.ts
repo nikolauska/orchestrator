@@ -32,6 +32,7 @@ export class FakeExec {
 	projectBranch = "main";
 	projectDirty = false;
 	rebaseFails = false;
+	gitInitFails = false;
 	promptStallsOnce = false;
 	agentIdentity = "omp";
 	#reportedPromptStall = false;
@@ -105,6 +106,7 @@ export class FakeExec {
 	#git(args: string[], cwd?: string): ExecResult {
 		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return this.#ok(cwd ?? this.project);
 		if (args[0] === "rev-parse" && args[1] === "HEAD") return this.#ok(this.projectHead);
+		if (args[0] === "init") return this.gitInitFails ? this.#fail("git init failed") : this.#ok();
 		if (args[0] === "check-ref-format") return args.at(-1)!.includes(" ") ? this.#fail("invalid ref") : this.#ok();
 		if (args[0] === "status") return this.#ok(this.projectDirty ? "dirty" : "");
 		if (args[0] === "symbolic-ref") return this.#ok(this.projectBranch);
