@@ -14,7 +14,7 @@ export class TaskRuntime {
 			this.#validate(params);
 			if (!("scope" in params)) {
 				// OMP's strict tool schema transport materializes omitted optional strings as ""; keep omission as default behavior.
-				params = { ...params, tasks: params.tasks.map(({ pushTo, role, ...item }) => ({ ...item, ...(pushTo ? { pushTo } : {}), ...(role ? { role } : {}) })) };
+				params = { ...params, tasks: params.tasks.map(({ pushTo, role, startFrom, ...item }) => ({ ...item, ...(pushTo ? { pushTo } : {}), ...(role ? { role } : {}), ...(startFrom ? { startFrom } : {}) })) };
 			}
 			const active = params.tasks.find(item => this.workers.has(item.name));
 			if (active) throw new Error(`Worker name already retained: ${active.name}`);
@@ -51,6 +51,8 @@ export class TaskRuntime {
 			if (independent && item.pushTo !== undefined) throw new Error(`Independent scout ${item.name} cannot set pushTo`);
 			if (!independent && item.kind === "scout" && item.pushTo !== undefined) throw new Error(`Scout task ${item.name} cannot set pushTo`);
 			if (!independent && item.pushTo !== undefined && (typeof item.pushTo !== "string" || !item.pushTo.trim())) throw new Error(`pushTo for ${item.name} must be non-empty`);
+			if (independent && item.startFrom !== undefined) throw new Error(`Independent scout ${item.name} cannot set startFrom`);
+			if (item.startFrom !== undefined && (typeof item.startFrom !== "string" || !item.startFrom.trim())) throw new Error(`startFrom for ${item.name} must be non-empty`);
 		}
 	}
 
@@ -70,7 +72,13 @@ export class TaskRuntime {
 		const top = await this.context.run("git", ["rev-parse", "--show-toplevel"], { cwd: canonical, signal });
 		if (await realpath(top.trim()) !== canonical || canonical !== projectPath) throw new Error(`Registered path is not its exact Git root: ${projectPath}`);
 		const head = (await this.context.run("git", ["rev-parse", "HEAD"], { cwd: canonical, signal })).trim();
-		for (const item of params.tasks) if (item.pushTo) await this.context.run("git", ["check-ref-format", "--branch", item.pushTo], { cwd: canonical, signal });
+		for (const item of params.tasks) {
+			if (item.pushTo) await this.context.run("git", ["check-ref-format", "--branch", item.pushTo], { cwd: canonical, signal });
+			if (item.startFrom) await this.context.run("git", ["check-ref-format", "--branch", item.startFrom], { cwd: canonical, signal });
+		}
+		const starts = Object.fromEntries(await Promise.all(params.tasks.flatMap(item => item.startFrom
+			? [this.context.run("git", ["rev-parse", "--verify", `refs/heads/${item.startFrom}`], { cwd: canonical, signal }).then(head => [item.name, head.trim()] as const)]
+			: [])));
 		const needsLocalDelivery = params.tasks.some(item => item.kind === "implementation" && !item.pushTo);
 		const needsLocalChanges = needsLocalDelivery || params.tasks.some(item => item.kind === "scout");
 		const localChanges = needsLocalChanges
@@ -81,8 +89,10 @@ export class TaskRuntime {
 			if (localChanges) throw new Error(`Registered project must be clean for local delivery: ${params.project}`);
 			branch = (await this.context.run("git", ["symbolic-ref", "--quiet", "--short", "HEAD"], { cwd: canonical, signal })).trim();
 			if (!branch) throw new Error("Local delivery requires a named branch");
+			const mismatched = params.tasks.find(item => item.kind === "implementation" && !item.pushTo && item.startFrom && item.startFrom !== branch);
+			if (mismatched) throw new Error(`Local delivery for ${mismatched.name} requires ${mismatched.startFrom} to be checked out`);
 		}
-		return { scope: "project", project: params.project, projectPath: canonical, workspace, head, branch, localChanges };
+		return { scope: "project", project: params.project, projectPath: canonical, workspace, head, branch, localChanges, starts };
 	}
 
 	async #workspace(commands: string[], signal?: AbortSignal): Promise<string> {
@@ -112,7 +122,7 @@ export class TaskRuntime {
 				if (!leasePath || !isAbsolute(leasePath) || !leaseId || !LEASE_ID.test(leaseId) || echoedHolder !== leaseHolder) throw new Error("treehouse get returned an unrecognized lease");
 				lease = { path: leasePath, lease_id: leaseId, lease_holder: echoedHolder };
 				directory = lease.path;
-				await this.context.run("git", ["-C", directory, "reset", "--hard", preflight.head], { signal });
+				await this.context.run("git", ["-C", directory, "reset", "--hard", preflight.starts[item.name] ?? preflight.head], { signal });
 			} else {
 				await mkdir(this.context.neutralRoot, { recursive: true });
 				const base = await realpath(this.context.neutralRoot);
@@ -141,7 +151,7 @@ export class TaskRuntime {
 			const prompt = item.kind === "implementation"
 				? `${context}\n\n${IMPLEMENTATION_PROMPT_SUFFIX}\n\n${item.task}`
 				: preflight.scope === "project"
-					? `${context}\n\nResearch only the exact committed revision ${preflight.head}; the registered checkout's local changes are excluded from this disposable worktree.${preflight.localChanges ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}` : " The registered checkout has no local changes to exclude."}\nYou may make scratch edits or commits only in this disposable worktree. They will never be delivered. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents. Do not implement changes for delivery.\n\n${item.task}`
+					? `${context}\n\nResearch only the exact committed revision ${preflight.starts[item.name] ?? preflight.head}; the registered checkout's local changes are excluded from this disposable worktree.${preflight.localChanges ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}` : " The registered checkout has no local changes to exclude."}\nYou may make scratch edits or commits only in this disposable worktree. They will never be delivered. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents.\n\n${item.task}`
 					: `${context}\n\nThis is a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded. Global and user OMP instructions still apply. Scratch files in ${directory} are disposable and are never delivered; do not create commits. Public web search and reads of public URLs are enabled by default. Access authenticated external systems only when this assignment explicitly instructs it. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Include source URLs and the research date. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents. Do not implement changes for delivery.\n\n${item.task}`;
 			await this.context.prompt(paneId, prompt, signal);
 			const agent = await this.context.agent(paneId, signal);
@@ -150,7 +160,7 @@ export class TaskRuntime {
 				scope: preflight.scope, kind: item.kind, name: item.name, role: item.role, status: agent.status === "blocked" ? "blocked" : "working",
 				workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId,
 				...(preflight.scope === "project"
-					? { project: preflight.project, projectPath: preflight.projectPath, worktree: directory, lease_id: lease!.lease_id, lease_holder: lease!.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, local_changes: item.kind === "scout" ? preflight.localChanges : undefined }
+					? { project: preflight.project, projectPath: preflight.projectPath, worktree: directory, lease_id: lease!.lease_id, lease_holder: lease!.lease_holder, delivery_base: preflight.starts[item.name] ?? preflight.head, branch: preflight.branch, push_to: item.pushTo, local_changes: item.kind === "scout" ? preflight.localChanges : undefined }
 					: { working_directory: directory }),
 				report_path: reportPath, generation: 0,
 			};
@@ -168,7 +178,7 @@ export class TaskRuntime {
 				const record: WorkerRecord = {
 					scope: preflight.scope, kind: item.kind, name: item.name, role: item.role, status: "failed", workspace_id: preflight.workspace, tab_id: tabId, pane_id: paneId,
 					...(preflight.scope === "project"
-						? { project: preflight.project, projectPath: preflight.projectPath, worktree: directory, lease_id: lease!.lease_id, lease_holder: lease!.lease_holder, delivery_base: preflight.head, branch: preflight.branch, push_to: item.pushTo, local_changes: item.kind === "scout" ? preflight.localChanges : undefined }
+						? { project: preflight.project, projectPath: preflight.projectPath, worktree: directory, lease_id: lease!.lease_id, lease_holder: lease!.lease_holder, delivery_base: preflight.starts[item.name] ?? preflight.head, branch: preflight.branch, push_to: item.pushTo, local_changes: item.kind === "scout" ? preflight.localChanges : undefined }
 						: { working_directory: directory }),
 					report_path: reportPath, error: message, generation: 0,
 				};
@@ -187,10 +197,9 @@ export function registerTaskTool(pi: ExtensionAPI, runtime: TaskRuntime): void {
 		description: "Launch project-scoped implementation or scout OMP workers, or project-independent scouts, in visible Herdr tabs. Project workers use isolated Treehouse worktrees; independent scouts use unique neutral working directories and public web research by default. One task call has one scope. Each assignment may select an OMP model role: smol for bounded research or mechanical work, slow for deep diagnosis or review, plan for architecture/schema/migration planning, designer for UI/UX, or vision for image inspection; omit role for normal work. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
 		parameters: z.union([
 			z.object({ project: z.string(), context: z.string(), tasks: z.array(z.discriminatedUnion("kind", [
-				z.object({ kind: z.literal("implementation"), name: z.string(), task: z.string(), role: z.string().optional(), pushTo: z.string().optional() }).strict(),
-				z.object({ kind: z.literal("scout"), name: z.string(), task: z.string(), role: z.string().optional() }).strict(),
+				z.object({ kind: z.literal("implementation"), name: z.string(), task: z.string(), role: z.string().optional(), pushTo: z.string().optional(), startFrom: z.string().optional() }).strict(),
+				z.object({ kind: z.literal("scout"), name: z.string(), task: z.string(), role: z.string().optional(), startFrom: z.string().optional() }).strict(),
 			])).min(1).max(32) }).strict(),
-			z.object({ scope: z.literal("independent"), context: z.string(), tasks: z.array(z.object({ kind: z.literal("scout"), name: z.string(), task: z.string(), role: z.string().optional() }).strict()).min(1).max(32) }).strict(),
 		]),
 		execute: async (_id: string, params: TaskParams, signal?: AbortSignal) => runtime.run(params, signal),
 	});

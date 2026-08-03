@@ -25,6 +25,21 @@ describe("scout reports", () => {
 		expect(prompt).toContain("dirty");
 	});
 
+	test("starts a scout from the selected local branch", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		fake.branchHeads.set("release", "release123");
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+
+		const result = await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "scout", name: "inspect", task: "Investigate", startFrom: "release" }] });
+
+		expect(result.isError).toBeUndefined();
+		expect(fake.calls.find(call => call.command === "git" && call.args.includes("reset"))?.args).toEqual(["-C", join(project, ".treehouse-inspect"), "reset", "--hard", "release123"]);
+		const prompt = fake.calls.find(call => call.command === "herdr" && call.args.includes("prompt"))?.args.join(" ") ?? "";
+		expect(prompt).toContain("exact committed revision release123");
+	});
+
 	test("rejects scout push before acquiring resources", async () => {
 		const { root, project } = await fixtureRoot();
 		const fake = new FakeExec(project);

@@ -9,11 +9,11 @@ Registered-project work supports two assignment types:
 - **Implementation** — makes an authorized change, verifies it, and commits it before completion.
 - **Scout** — investigates, plans, audits, or diagnoses without delivering changes.
 
+A task may select an existing local branch as its starting point. This lets work and research use a branch other than the registered project's currently checked-out branch.
+
 Workers run in visible tabs. A request can start multiple independent assignments together, with a maximum of 32 workers.
 
-Implementation work is delivered locally by default: a successful committed change advances the registered project's current branch. A request may instead deliver the committed change to a named remote branch.
-
-Local delivery requires the registered project to be clean and on a named branch. If the project becomes changed or switches branches before delivery, delivery stops rather than overwriting local work. When concurrent completed changes can be applied safely, they are reconciled before local delivery; conflicts are retained for recovery.
+Implementation work is delivered locally by default: a successful committed change advances the registered project's current branch. A task that starts from a selected branch can be delivered locally only when that branch is currently checked out; otherwise it can use a named remote delivery branch.
 
 ## Project research
 

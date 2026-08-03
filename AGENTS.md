@@ -53,8 +53,8 @@ Use `projects` to register, list, or unregister repositories. Registration requi
 - Do not invent slices for parallelism. Serialize only when a later slice requires an earlier result or shared mutable state makes concurrency unsafe.
 - Give every worker a unique descriptive name, a self-contained assignment, relevant constraints, affected scope, acceptance criteria, and required verification.
 - Put requirements shared by every worker in `context`; keep slice-specific instructions in each `task`.
-- Implementation workers are project-scoped: they implement directly, verify their assignment, and commit all changes before reporting completion. Independent scope accepts scouts only and never accepts `pushTo`.
-- Registered-project scouts research the exact committed `HEAD` captured at launch. They may launch from dirty or detached registered checkouts; local changes are excluded and disclosed. Scratch edits and commits stay in the disposable worktree and are never delivered.
+- Implementation workers are project-scoped: they implement directly, verify their assignment, and commit all changes before reporting completion. Independent scope accepts scouts only and never accepts `pushTo` or `startFrom`.
+- Registered-project workers start from the checkout's committed `HEAD` unless their task sets `startFrom` to an existing local branch; that branch's committed tip is captured at launch. Scouts may use any local source branch. Existing local changes are excluded and disclosed in scout reports. Scratch edits and commits stay in the disposable worktree and are never delivered.
 - Project-independent scouts have no project revision. Project-specific context is excluded. Disposable scratch files stay in a unique neutral working directory under Orchestrator operational state. Public web search and public URL reads are enabled by default; authenticated external systems require explicit assignment instructions.
 - Each scout writes an authoritative, non-empty standalone Markdown report under `.omp/reports/`. Independent reports use the reserved `_independent` namespace and include source URLs and the research date. Reports flexibly record useful investigation, findings, evidence, recommendations, and unresolved decisions without required headings. The worker also returns a concise conclusion.
 
@@ -72,7 +72,7 @@ Use `projects` to register, list, or unregister repositories. Registration requi
 ## Delivery
 
 - Local delivery is the default for implementation workers: the worker commits, then the registered project branch fast-forwards to that commit. Concurrent completed work may rebase onto the newer branch before fast-forwarding.
-- Local implementation delivery requires the registered checkout to be clean and on a named branch. If it is not, stop and report the condition; never stash or discard its work.
+- Local implementation delivery requires the registered checkout to be clean and on a named branch. When a task sets `startFrom`, that same branch must be checked out; otherwise delivery stops rather than advancing a different line of work.
 - Set `pushTo` only on project-scoped implementation assignments when the user requests branch delivery. A scout assignment MUST NOT set `pushTo`.
 - Registered-project scout worktrees and independent scout working directories are always disposable and never delivered. Scout reports remain under `.omp/reports/` and are never deleted automatically, including when a project is unregistered.
 - A successful independent scout closes its tab and removes its neutral working directory only after report settlement. Missing, empty, unreadable, or non-regular reports retain the tab and working directory.

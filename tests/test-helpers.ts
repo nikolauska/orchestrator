@@ -26,6 +26,7 @@ export class FakeExec {
 	readonly waits = new Map<string, Waiter>();
 	readonly status = new Map<string, string>();
 	readonly workerHeads = new Map<string, string>();
+	readonly branchHeads = new Map<string, string>([["main", "base"]]);
 	readonly dirtyWorkers = new Set<string>();
 	readonly outputs = new Map<string, string>();
 	projectHead = "base";
@@ -106,6 +107,11 @@ export class FakeExec {
 	#git(args: string[], cwd?: string): ExecResult {
 		if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return this.#ok(cwd ?? this.project);
 		if (args[0] === "rev-parse" && args[1] === "HEAD") return this.#ok(this.projectHead);
+		if (args[0] === "rev-parse" && args[1] === "--verify") {
+			const branch = args[2]?.replace("refs/heads/", "");
+			const head = branch && this.branchHeads.get(branch);
+			return head ? this.#ok(head) : this.#fail("unknown branch");
+		}
 		if (args[0] === "init") return this.gitInitFails ? this.#fail("git init failed") : this.#ok();
 		if (args[0] === "check-ref-format") return args.at(-1)!.includes(" ") ? this.#fail("invalid ref") : this.#ok();
 		if (args[0] === "status") return this.#ok(this.projectDirty ? "dirty" : "");

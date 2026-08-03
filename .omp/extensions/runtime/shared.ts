@@ -11,7 +11,7 @@ export type RuntimeDeps = {
 export type ToolResult = { content: [{ type: "text"; text: string }]; isError?: boolean; details?: unknown };
 export type ProjectParams = { op: "list" } | { op: "add"; name: string; path: string } | { op: "create"; name: string; path?: string } | { op: "remove"; name: string } | { op: "set-root"; path: string };
 export type TaskKind = "implementation" | "scout";
-export type TaskItem = { kind: TaskKind; name: string; task: string; role?: string; pushTo?: string };
+export type TaskItem = { kind: TaskKind; name: string; task: string; role?: string; pushTo?: string; startFrom?: string };
 export type ProjectTaskParams = { project: string; context: string; tasks: TaskItem[] };
 export type IndependentTaskParams = { scope: "independent"; context: string; tasks: TaskItem[] };
 export type TaskParams = ProjectTaskParams | IndependentTaskParams;
@@ -25,6 +25,7 @@ export type ProjectPreflight = {
 	head: string;
 	branch?: string;
 	localChanges: string;
+	starts: Record<string, string>;
 };
 export type IndependentPreflight = { scope: "independent"; workspace: string; forbiddenRoots: string[] };
 export type Preflight = ProjectPreflight | IndependentPreflight;

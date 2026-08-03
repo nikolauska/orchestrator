@@ -110,6 +110,9 @@ describe("launch and control", () => {
 		fake.projectBranch = "";
 		expect((await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "detached", task: "work" }] })).content[0].text).toContain("named branch");
 		expect(fake.calls.some(call => call.command === "treehouse" && call.args[0] === "get")).toBe(false);
+		fake.projectBranch = "main";
+		fake.branchHeads.set("release", "release123");
+		expect((await instance.runTask({ project: "fixture", context: "", tasks: [{ kind: "implementation", name: "wrong-branch", task: "work", startFrom: "release" }] })).content[0].text).toContain("requires release to be checked out");
 	});
 });
 describe("delivery", () => {
