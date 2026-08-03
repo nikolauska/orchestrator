@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { ProjectsRuntime, registerProjectsTool } from "./projects";
-import { WorkerContext, type ExecResult, type ProjectParams, type RuntimeDeps, type TaskParams, type ToolResult, type WorkersParams } from "./shared";
-import { TaskRuntime, registerTaskTool } from "./task";
-import { WorkersRuntime, registerWorkersTool } from "./workers";
+import { ProjectsRuntime, registerProjectsTool } from "./runtime/projects";
+import { WorkerContext, type ExecResult, type ProjectParams, type RuntimeDeps, type TaskParams, type ToolResult, type WorkersParams } from "./runtime/shared";
+import { TaskRuntime, registerTaskTool } from "./runtime/task";
+import { WorkersRuntime, registerWorkersTool } from "./runtime/workers";
 
-export type { ExecResult, RuntimeDeps } from "./shared";
+export type { ExecResult, RuntimeDeps } from "./runtime/shared";
 
 export class VisibleWorkerRuntime {
 	readonly projects: ProjectsRuntime;

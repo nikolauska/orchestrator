@@ -5,11 +5,8 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 ## Structure
 
 ```text
-.omp/extensions/entrypoint.ts      Extension entrypoint
-.omp/extensions/shared.ts          Shared worker state and utilities
-.omp/extensions/projects.ts        Projects tool and registry runtime
-.omp/extensions/task.ts            Task tool and launch runtime
-.omp/extensions/workers.ts         Workers tool and lifecycle runtime
+.omp/extensions/entrypoint.ts      Extension factory
+.omp/extensions/runtime/           Visible-worker runtime modules
 .omp/projects.json                  Local project registry; ignored, never commit
 docs/domain/                        Confirmed customer-visible behavior
 tests/test-helpers.ts               Shared worker test fixtures
