@@ -5,10 +5,17 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 ## Structure
 
 ```text
-.omp/extensions/visible-workers.ts  Visible-worker tool runtime
+.omp/extensions/entrypoint.ts      Extension entrypoint
+.omp/extensions/shared.ts          Shared worker state and utilities
+.omp/extensions/projects.ts        Projects tool and registry runtime
+.omp/extensions/task.ts            Task tool and launch runtime
+.omp/extensions/workers.ts         Workers tool and lifecycle runtime
 .omp/projects.json                  Local project registry; ignored, never commit
 docs/domain/                        Confirmed customer-visible behavior
-tests/visible-workers.test.ts       Bun behavior tests
+tests/test-helpers.ts               Shared worker test fixtures
+tests/projects.test.ts              Projects tool behavior tests
+tests/task.test.ts                  Task tool behavior tests
+tests/workers.test.ts               Workers tool behavior tests
 ```
 
 ## Conventions
@@ -28,7 +35,7 @@ Run from the repository root:
 
 ```bash
 bun test  # ON FAIL: rerun the failing test file and inspect the first failed assertion.
-bun test tests/visible-workers.test.ts  # ON FAIL: rerun with the failing test name using `-t`.
+bun test tests/<tool>.test.ts  # ON FAIL: rerun the failing test file with `-t`.
 ```
 
 There is no separate install, lint, or build configuration in this repository. Do not invent one; add tooling only when a concrete need justifies it.
