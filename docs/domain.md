@@ -1,3 +1,5 @@
 # Domain handbook
 
-- [Visible worker agents](domain/visible-worker-agents.md) — How the root coordinates registered-project work and project-independent research, including scope, reports, delivery, completion, and recovery.
+- [Projects tool](domain/projects-tool.md) — Register, create, list, and remove project workspaces.
+- [Task tool](domain/task-tool.md) — Start project work or independent research in visible worker tabs.
+- [Workers tool](domain/workers-tool.md) — Check active workers and send corrections to selected workers.
