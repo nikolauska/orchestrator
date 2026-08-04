@@ -27,6 +27,7 @@ export class ProjectsRuntime {
 				if (other) throw new Error(`Project path already registered as ${other[0]}`);
 				await mkdir(target);
 				await this.context.run("git", ["init"], { cwd: target, signal });
+				await this.context.run("git", ["commit", "--allow-empty", "-m", "Initial commit"], { cwd: target, signal });
 				projects[params.name] = target;
 				await this.#write(projects);
 				return this.#result(projects);

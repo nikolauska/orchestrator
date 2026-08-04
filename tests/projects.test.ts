@@ -42,6 +42,7 @@ describe("project registry", () => {
 		await instance.runProjects({ op: "create", name: "api" });
 		expect((await instance.runProjects({ op: "list" })).details).toEqual([{ name: "api", path: join(projectsRoot, "api") }]);
 		expect(fake.calls).toContainEqual({ command: "git", args: ["init"], cwd: join(projectsRoot, "api") });
+		expect(fake.calls).toContainEqual({ command: "git", args: ["commit", "--allow-empty", "-m", "Initial commit"], cwd: join(projectsRoot, "api") });
 		expect((await instance.runProjects({ op: "create", name: "web", path: join(projectsRoot, "custom-web") })).isError).toBeUndefined();
 		expect(await readFile(join(root, ".omp", "projects-root"), "utf8")).toBe(`${projectsRoot}\n`);
 	});
@@ -61,6 +62,16 @@ describe("project registry", () => {
 		fake.gitInitFails = true;
 		const instance = runtime(root, fake, []);
 		expect((await instance.runProjects({ op: "create", name: "failed", path: destination })).isError).toBe(true);
+		expect((await stat(destination)).isDirectory()).toBe(true);
+		expect((await instance.runProjects({ op: "list" })).details).toEqual([]);
+	});
+	test("does not register a project when its initial commit fails", async () => {
+		const { root, project } = await fixtureRoot();
+		const destination = join(root, "commit-failed");
+		const fake = new FakeExec(project);
+		fake.gitCommitFails = true;
+		const instance = runtime(root, fake, []);
+		expect((await instance.runProjects({ op: "create", name: "commit-failed", path: destination })).isError).toBe(true);
 		expect((await stat(destination)).isDirectory()).toBe(true);
 		expect((await instance.runProjects({ op: "list" })).details).toEqual([]);
 	});
