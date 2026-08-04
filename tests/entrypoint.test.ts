@@ -34,4 +34,5 @@ test("loads with the extension's Zod facade", () => {
 	};
 	// This facade intentionally omits discriminatedUnion, matching the extension host.
 	extension(pi as unknown as Parameters<typeof extension>[0]);
+	expect(tools.map(tool => tool.name)).toEqual(["projects", "task", "workers", "reports"]);
 });

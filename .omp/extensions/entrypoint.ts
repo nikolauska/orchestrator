@@ -1,6 +1,7 @@
 import type { ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { ProjectsRuntime, registerProjectsTool } from "./runtime/projects";
-import { WorkerContext, type ExecResult, type ProjectParams, type RuntimeDeps, type TaskParams, type ToolResult, type WorkersParams } from "./runtime/shared";
+import { WorkerContext, type ExecResult, type ProjectParams, type ReportsParams, type RuntimeDeps, type TaskParams, type ToolResult, type WorkersParams } from "./runtime/shared";
+import { ReportsRuntime, registerReportsTool } from "./runtime/reports";
 import { TaskRuntime, registerTaskTool } from "./runtime/task";
 import { WorkersRuntime, registerWorkersTool } from "./runtime/workers";
 
@@ -9,13 +10,14 @@ export type { ExecResult, RuntimeDeps } from "./runtime/shared";
 export class VisibleWorkerRuntime {
 	readonly projects: ProjectsRuntime;
 	readonly task: TaskRuntime;
-	readonly workers: WorkersRuntime;
+	readonly reports: ReportsRuntime;
 
 	constructor(deps: RuntimeDeps, root = process.cwd(), env: Record<string, string | undefined> = process.env, neutralRoot?: string) {
 		const context = new WorkerContext(deps, root, env, neutralRoot);
 		this.projects = new ProjectsRuntime(context);
 		this.workers = new WorkersRuntime(context);
 		this.task = new TaskRuntime(context, this.projects, this.workers);
+		this.reports = new ReportsRuntime(context);
 	}
 
 	runProjects(params: ProjectParams, signal?: AbortSignal): Promise<ToolResult> {
@@ -30,6 +32,10 @@ export class VisibleWorkerRuntime {
 		return this.workers.run(params, signal);
 	}
 
+	runReports(params: ReportsParams, signal?: AbortSignal): Promise<ToolResult> {
+		return this.reports.run(params, signal);
+	}
+
 	dispose(): void {
 		this.workers.dispose();
 	}
@@ -40,6 +46,7 @@ export default function visibleWorkersExtension(pi: ExtensionAPI): void {
 	registerProjectsTool(pi, runtime.projects);
 	registerTaskTool(pi, runtime.task);
 	registerWorkersTool(pi, runtime.workers);
+	registerReportsTool(pi, runtime.reports);
 	pi.on("session_switch", () => runtime.dispose());
 	pi.on("session_shutdown", () => runtime.dispose());
 }

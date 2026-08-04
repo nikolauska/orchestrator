@@ -16,6 +16,7 @@ export type ProjectTaskParams = { project: string; context: string; tasks: TaskI
 export type IndependentTaskParams = { scope: "independent"; context: string; tasks: TaskItem[] };
 export type TaskParams = ProjectTaskParams | IndependentTaskParams;
 export type WorkersParams = { op: "list" } | { op: "send"; names: string[]; message: string };
+export type ReportsParams = { op: "list"; project?: string } | { op: "get"; path: string };
 export type AgentState = "idle" | "working" | "blocked" | "done";
 export type ProjectPreflight = {
 	scope: "project";
