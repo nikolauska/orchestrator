@@ -203,7 +203,7 @@ export function registerWorkersTool(pi: ExtensionAPI, runtime: WorkersRuntime): 
 	pi.registerTool({
 		name: "workers", label: "Workers", loadMode: "essential", approval: "exec",
 		description: "List visible worker agents or send a plan change to named workers. Use this instead of hub for workers launched by task. Workers MUST NOT create new workers.",
-		parameters: z.discriminatedUnion("op", [z.object({ op: z.literal("list") }), z.object({ op: z.literal("send"), names: z.array(z.string()).min(1), message: z.string() })]),
+		parameters: z.union([z.object({ op: z.literal("list") }), z.object({ op: z.literal("send"), names: z.array(z.string()).min(1), message: z.string() })]),
 		execute: async (_id: string, params: WorkersParams, signal?: AbortSignal) => runtime.run(params, signal),
 	});
 }

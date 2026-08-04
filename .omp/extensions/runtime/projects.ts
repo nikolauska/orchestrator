@@ -130,7 +130,7 @@ export function registerProjectsTool(pi: ExtensionAPI, runtime: ProjectsRuntime)
 	pi.registerTool({
 		name: "projects", label: "Projects", loadMode: "essential", approval: "write",
 		description: "Create, register, and manage local Git projects used by visible worker tasks. Configure a projects root before creating at the default destination. Removal unregisters only; it never deletes a repository.",
-		parameters: z.discriminatedUnion("op", [z.object({ op: z.literal("list") }), z.object({ op: z.literal("add"), name: z.string(), path: z.string() }), z.object({ op: z.literal("create"), name: z.string(), path: z.string().optional() }), z.object({ op: z.literal("remove"), name: z.string() }), z.object({ op: z.literal("set-root"), path: z.string() })]),
+		parameters: z.union([z.object({ op: z.literal("list") }), z.object({ op: z.literal("add"), name: z.string(), path: z.string() }), z.object({ op: z.literal("create"), name: z.string(), path: z.string().optional() }), z.object({ op: z.literal("remove"), name: z.string() }), z.object({ op: z.literal("set-root"), path: z.string() })]),
 		execute: async (_id: string, params: ProjectParams, signal?: AbortSignal) => runtime.run(params, signal),
 	});
 }

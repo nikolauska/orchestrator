@@ -196,7 +196,7 @@ export function registerTaskTool(pi: ExtensionAPI, runtime: TaskRuntime): void {
 		name: "task", label: "Visible Workers", loadMode: "essential", approval: "exec",
 		description: "Launch project-scoped implementation or scout OMP workers, or project-independent scouts, in visible Herdr tabs. Project workers use isolated Treehouse worktrees; independent scouts use unique neutral working directories and public web research by default. One task call has one scope. Each assignment may select an OMP model role: smol for bounded research or mechanical work, slow for deep diagnosis or review, plan for architecture/schema/migration planning, designer for UI/UX, or vision for image inspection; omit role for normal work. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
 		parameters: z.union([
-			z.object({ project: z.string(), context: z.string(), tasks: z.array(z.discriminatedUnion("kind", [
+			z.object({ project: z.string(), context: z.string(), tasks: z.array(z.union([
 				z.object({ kind: z.literal("implementation"), name: z.string(), task: z.string(), role: z.string().optional(), pushTo: z.string().optional(), startFrom: z.string().optional() }).strict(),
 				z.object({ kind: z.literal("scout"), name: z.string(), task: z.string(), role: z.string().optional(), startFrom: z.string().optional() }).strict(),
 			])).min(1).max(32) }).strict(),
