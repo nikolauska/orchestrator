@@ -4,6 +4,32 @@ import { join } from "node:path";
 import { cleanup, eventually, FakeExec, fixtureRoot, launchedIndependent, launchedScout, register, roots, runtime } from "./test-helpers";
 
 afterEach(cleanup);
+describe("worker prompts", () => {
+	test("adds ponytail guidance only to implementation workers", async () => {
+		const { root, project } = await fixtureRoot();
+		const fake = new FakeExec(project);
+		const instance = runtime(root, fake, []);
+		await register(instance, project);
+
+		const result = await instance.runTask({
+			project: "fixture",
+			context: "",
+			tasks: [
+				{ kind: "implementation", name: "implement", task: "Change" },
+				{ kind: "scout", name: "scout", task: "Investigate" },
+			],
+		});
+
+		expect(result.isError).toBeUndefined();
+		const promptFor = (pane: string) => {
+			const call = fake.calls.find(call => call.command === "herdr" && call.args.includes("prompt") && call.args[call.args.indexOf("prompt") + 1] === pane);
+			return call?.args[call.args.indexOf("prompt") + 2] ?? "";
+		};
+		expect(promptFor("pane:implement")).toContain("Use the ponytail skill for this assignment.");
+		expect(promptFor("pane:scout")).not.toContain("ponytail");
+	});
+});
+
 describe("scout reports", () => {
 	test("launches from dirty detached HEAD and discloses excluded local changes", async () => {
 		const { root, project } = await fixtureRoot();
@@ -126,7 +152,7 @@ describe("project-independent scouts", () => {
 		expect(starts.map(call => call.args[call.args.indexOf("--cwd") + 1]).sort()).toEqual(directories.sort());
 		const prompt = launched.fake.calls.find(call => call.command === "herdr" && call.args.includes("prompt"))?.args.join(" ") ?? "";
 		for (const required of ["project-independent scout", "No registered-project checkout or project revision applies", "project-specific context is intentionally excluded", "Scratch files", "Public web search", "authenticated external systems", "source URLs", "research date", "authoritative, non-empty standalone Markdown report"]) expect(prompt).toContain(required);
-		for (const excluded of ["exact committed revision", "local changes are excluded", "disposable worktree"]) expect(prompt).not.toContain(excluded);
+		for (const excluded of ["exact committed revision", "local changes are excluded", "disposable worktree", "ponytail"]) expect(prompt).not.toContain(excluded);
 	});
 
 	test("settles reports before removing the neutral directory", async () => {
