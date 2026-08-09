@@ -5,14 +5,14 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 ## Structure
 
 ```text
-.omp/extensions/entrypoint.ts      Extension factory
-.omp/extensions/runtime/           Visible-worker runtime modules
-.omp/projects.json                  Local project registry; ignored, never commit
-docs/domain/                        Confirmed customer-visible behavior
-tests/test-helpers.ts               Shared worker test fixtures
-tests/projects.test.ts              Projects tool behavior tests
-tests/task.test.ts                  Task tool behavior tests
-tests/workers.test.ts               Workers tool behavior tests
+.omp/tools/*.ts                   Custom tool factories
+.omp/runtime/shared.ts             Shared types and helpers
+.omp/projects.json                Local project registry; ignored, never commit
+docs/domain/                      Confirmed customer-visible behavior
+tests/test-helpers.ts             Shared worker test fixtures
+tests/projects.test.ts             Projects tool behavior tests
+tests/task.test.ts                 Task tool behavior tests
+tests/workers.test.ts              Workers tool behavior tests
 ```
 
 ## Conventions
@@ -31,10 +31,12 @@ tests/workers.test.ts               Workers tool behavior tests
 Run from the repository root:
 
 ```bash
+bun run lint  # Check the source and tests with Oxlint.
+bun run fmt -- --check  # Verify formatting without changing files.
 bun test  # ON FAIL: rerun the failing test file and inspect the first failed assertion.
 bun test tests/<tool>.test.ts  # ON FAIL: rerun the failing test file with `-t`.
 ```
 
-There is no separate install, lint, or build configuration in this repository. Do not invent one; add tooling only when a concrete need justifies it.
+Run `bun run fmt` to apply formatting changes before committing.
 
 Tests use temporary directories and fake command execution. Keep them deterministic, isolated from real Herdr and Treehouse state, and focused on observable registry, launch, control, delivery, and recovery behavior.

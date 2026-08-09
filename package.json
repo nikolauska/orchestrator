@@ -1,0 +1,21 @@
+{
+  "name": "orchestrator",
+  "private": true,
+  "type": "module",
+  "module": "index.ts",
+  "scripts": {
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "fmt": "oxfmt",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@oh-my-pi/pi-coding-agent": "^17.2.11",
+    "@types/bun": "^1.3.14",
+    "oxfmt": "^0.62.0",
+    "oxlint": "^1.77.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  }
+}
