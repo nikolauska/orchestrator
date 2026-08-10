@@ -43,13 +43,13 @@ Use `projects` to register, list, or unregister repositories. Registration requi
 - `role` selects an OMP model role, not a worker personality. Omit it for normal work. Use:
   - `smol` for bounded repository or external research, data collection, and mechanical changes.
   - `slow` for difficult diagnosis or review, especially security, concurrency, state machines, and cross-module migrations.
+  - `advisor` only when the user specially requests it; it selects a more expensive model for explicit advisory reviews, implementation-readiness assessments, and unresolved-decision analysis.
   - `plan` for plans that define interfaces, schemas, migrations, or parallel work boundaries.
   - `designer` for UI/UX implementation and visual refinement.
   - `vision` for image inspection.
   - `commit` only for commit analysis, grouping, messages, or changelogs.
   - `tiny` only for low-risk labels, classification, and similar background work—not project research or implementation.
   - `task` only when deliberately selecting OMP's configured general-purpose task lane.
-  - Never select `advisor`; OMP owns it as the optional post-turn reviewer.
 - Batch genuinely independent slices of the same scope in one `orchestrator_task` call so they run concurrently.
 - Do not invent slices for parallelism. Serialize only when a later slice requires an earlier result or shared mutable state makes concurrency unsafe.
 - Give every worker a unique descriptive name, a self-contained assignment, relevant constraints, affected scope, acceptance criteria, and required verification.
