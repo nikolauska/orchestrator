@@ -423,7 +423,7 @@ const taskTool: CustomToolFactory = (pi) => {
 
   return {
     name: "orchestrator_task",
-    label: "Visible Workers",
+    label: "Orchestrator task",
     loadMode: "essential",
     approval: "exec",
     description:
