@@ -6,8 +6,6 @@ import {
   LEASE_ID,
   NAME,
   errorMessage,
-  parseJson,
-  stringAt,
   text,
   type IndependentTaskParams,
   type Preflight,
@@ -18,13 +16,34 @@ import {
 } from "../runtime/shared";
 import { readProjects, validateName } from "./projects";
 import {
-  adoptWorker,
-  bestEffort,
-  disposeWorkers,
-  execCommand,
+  branchHead,
+  checkBranch,
+  currentBranch,
+  head,
+  resetHard,
+  status,
+  topLevel,
+  version as gitVersion,
+} from "../runtime/git";
+import {
+  closeTabBestEffort,
+  createTab,
+  ensureIntegration,
   getAgent,
-  hasWorker,
   promptAgent,
+  startOmpAgent,
+  waitForShell,
+} from "../runtime/herdr";
+import {
+  acquireLease,
+  returnLeaseBestEffort,
+  type TreehouseLease,
+  version as treehouseVersion,
+} from "../runtime/treehouse";
+import {
+  adoptWorker,
+  disposeWorkers,
+  hasWorker,
   publicRecord,
   stateFor,
   type WorkerState,
@@ -126,7 +145,7 @@ async function preflightTask(
   signal?: AbortSignal,
 ): Promise<Preflight> {
   if ("scope" in params) {
-    const workspace = await workspaceFor(state, ["herdr", "omp"], signal);
+    const workspace = await workspaceFor(state, false, signal);
     const projects = await readProjects(root, signal);
     const canonicalRoot = await realpath(state.root);
     return {
@@ -141,43 +160,29 @@ async function preflightTask(
     throw new Error(
       `Unknown registered project: ${params.project}. Registered: ${Object.keys(projects).sort().join(", ") || "(none)"}`,
     );
-  const workspace = await workspaceFor(state, ["herdr", "treehouse", "git", "omp"], signal);
+  const workspace = await workspaceFor(state, true, signal);
   let canonical: string;
   try {
     canonical = await realpath(projectPath);
   } catch {
     throw new Error(`Registered project path is missing: ${projectPath}`);
   }
-  const top = await execCommand(state, "git", ["rev-parse", "--show-toplevel"], {
-    cwd: canonical,
-    signal,
-  });
-  if ((await realpath(top.trim())) !== canonical || canonical !== projectPath)
+  const top = await topLevel(state.deps, { cwd: canonical, signal });
+  if ((await realpath(top)) !== canonical || canonical !== projectPath)
     throw new Error(`Registered path is not its exact Git root: ${projectPath}`);
-  const head = (
-    await execCommand(state, "git", ["rev-parse", "HEAD"], { cwd: canonical, signal })
-  ).trim();
+  const initialHead = await head(state.deps, { cwd: canonical, signal });
   for (const item of params.tasks) {
-    if (item.pushTo)
-      await execCommand(state, "git", ["check-ref-format", "--branch", item.pushTo], {
-        cwd: canonical,
-        signal,
-      });
-    if (item.startFrom)
-      await execCommand(state, "git", ["check-ref-format", "--branch", item.startFrom], {
-        cwd: canonical,
-        signal,
-      });
+    if (item.pushTo) await checkBranch(state.deps, item.pushTo, { cwd: canonical, signal });
+    if (item.startFrom) await checkBranch(state.deps, item.startFrom, { cwd: canonical, signal });
   }
   const starts = Object.fromEntries(
     await Promise.all(
       params.tasks.flatMap((item) =>
         item.startFrom
           ? [
-              execCommand(state, "git", ["rev-parse", "--verify", `refs/heads/${item.startFrom}`], {
-                cwd: canonical,
-                signal,
-              }).then((branchHead) => [item.name, branchHead.trim()] as const),
+              branchHead(state.deps, item.startFrom, { cwd: canonical, signal }).then(
+                (branchHead) => [item.name, branchHead] as const,
+              ),
             ]
           : [],
       ),
@@ -189,21 +194,13 @@ async function preflightTask(
   const needsLocalChanges =
     needsLocalDelivery || params.tasks.some((item) => item.kind === "scout");
   const localChanges = needsLocalChanges
-    ? await execCommand(state, "git", ["status", "--porcelain=v1", "--untracked-files=all"], {
-        cwd: canonical,
-        signal,
-      })
+    ? await status(state.deps, { cwd: canonical, signal })
     : "";
   let branch: string | undefined;
   if (needsLocalDelivery) {
     if (localChanges)
       throw new Error(`Registered project must be clean for local delivery: ${params.project}`);
-    branch = (
-      await execCommand(state, "git", ["symbolic-ref", "--quiet", "--short", "HEAD"], {
-        cwd: canonical,
-        signal,
-      })
-    ).trim();
+    branch = await currentBranch(state.deps, { cwd: canonical, signal });
     if (!branch) throw new Error("Local delivery requires a named branch");
     const mismatched = params.tasks.find(
       (item) =>
@@ -222,7 +219,7 @@ async function preflightTask(
     project: params.project,
     projectPath: canonical,
     workspace,
-    head,
+    head: initialHead,
     branch,
     localChanges,
     starts,
@@ -231,7 +228,7 @@ async function preflightTask(
 
 async function workspaceFor(
   state: WorkerState,
-  commands: string[],
+  projectScope: boolean,
   signal?: AbortSignal,
 ): Promise<string> {
   const pane = state.env.HERDR_PANE_ID;
@@ -240,9 +237,10 @@ async function workspaceFor(
     throw new Error(
       "Herdr's OMP integration is required; run `herdr integration install omp` and restart OMP",
     );
-  await Promise.all(
-    commands.map((command) => execCommand(state, command, ["--version"], { signal })),
-  );
+  await Promise.all([
+    ensureIntegration(state.deps, signal),
+    ...(projectScope ? [gitVersion(state.deps, signal), treehouseVersion(state.deps, signal)] : []),
+  ]);
   return workspace;
 }
 
@@ -255,7 +253,7 @@ async function launchWorker(
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
   const leaseHolder = `omp-orchestrator:${item.name}`;
-  let lease: { path: string; lease_id: string; lease_holder: string } | undefined;
+  let lease: TreehouseLease | undefined;
   let directory: string | undefined;
   let tabId: string | undefined;
   let paneId: string | undefined;
@@ -272,34 +270,15 @@ async function launchWorker(
       : undefined;
   try {
     if (preflight.scope === "project") {
-      const leaseJson = parseJson(
-        await execCommand(
-          state,
-          "treehouse",
-          ["get", "--lease", "--lease-holder", leaseHolder, "--json"],
-          { cwd: preflight.projectPath, signal },
-        ),
-        "treehouse get",
-      );
-      const leasePath = stringAt(leaseJson, ["path"]);
-      const leaseId = stringAt(leaseJson, ["lease_id"]);
-      const echoedHolder = stringAt(leaseJson, ["lease_holder"]);
+      lease = await acquireLease(state.deps, preflight.projectPath, leaseHolder, signal);
       if (
-        !leasePath ||
-        !isAbsolute(leasePath) ||
-        !leaseId ||
-        !LEASE_ID.test(leaseId) ||
-        echoedHolder !== leaseHolder
+        !isAbsolute(lease.path) ||
+        !LEASE_ID.test(lease.leaseId) ||
+        lease.leaseHolder !== leaseHolder
       )
         throw new Error("treehouse get returned an unrecognized lease");
-      lease = { path: leasePath, lease_id: leaseId, lease_holder: echoedHolder };
       directory = lease.path;
-      await execCommand(
-        state,
-        "git",
-        ["-C", directory, "reset", "--hard", preflight.starts[item.name] ?? preflight.head],
-        { signal },
-      );
+      await resetHard(state.deps, directory, preflight.starts[item.name] ?? preflight.head, signal);
     } else {
       await mkdir(state.neutralRoot, { recursive: true });
       const base = await realpath(state.neutralRoot);
@@ -323,74 +302,20 @@ async function launchWorker(
     }
     if (!directory) throw new Error("Worker directory was not allocated");
     if (reportPath) await mkdir(dirname(reportPath), { recursive: true });
-    const tabJson = parseJson(
-      await execCommand(
-        state,
-        "herdr",
-        [
-          "tab",
-          "create",
-          "--workspace",
-          preflight.workspace,
-          "--cwd",
-          directory,
-          "--label",
-          item.name,
-          "--no-focus",
-        ],
-        { signal },
-      ),
-      "herdr tab create",
-    );
-    tabId = stringAt(tabJson, ["result", "tab", "tab_id"]);
-    paneId = stringAt(tabJson, ["result", "root_pane", "pane_id"]);
-    if (!tabId || !paneId) throw new Error("herdr tab create returned unrecognized identifiers");
-    // Tab creation returns before the startup shell necessarily reaches its prompt; agent start rejects a transiently busy pane.
-    await execCommand(
-      state,
-      "herdr",
-      [
-        "pane",
-        "wait-output",
-        paneId,
-        "--regex",
-        "[#$>]\\s*$",
-        "--source",
-        "visible",
-        "--lines",
-        "10",
-        "--timeout",
-        "5000",
-      ],
-      { signal },
-    );
+    const tab = await createTab(state.deps, preflight.workspace, directory, item.name, signal);
+    tabId = tab.tabId;
+    paneId = tab.paneId;
+    await waitForShell(state.deps, paneId, signal);
     ompMayHaveStarted = true;
-    await execCommand(
-      state,
-      "herdr",
-      [
-        "agent",
-        "start",
-        item.name,
-        "--kind",
-        "omp",
-        "--pane",
-        paneId,
-        "--",
-        "--cwd",
-        directory,
-        ...(item.role ? ["--model", `@${item.role}`] : []),
-      ],
-      { signal },
-    );
+    await startOmpAgent(state.deps, item.name, paneId, directory, item.role, signal);
     const prompt =
       item.kind === "implementation"
         ? `${context}\n\n${IMPLEMENTATION_PROMPT_SUFFIX}\nUse the ponytail skill for this assignment.\n\n${item.task}`
         : preflight.scope === "project"
           ? `${context}\n\nResearch only the exact committed revision ${preflight.starts[item.name] ?? preflight.head}; the registered checkout's local changes are excluded and disclosed in the report.${preflight.localChanges ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}` : " The registered checkout has no local changes to exclude."}\nYou may make scratch edits or commits only in this disposable worktree. They will never be delivered. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents.\n\n${item.task}`
           : `${context}\n\nThis is a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded. Global and user OMP instructions still apply. Scratch files in ${directory} are disposable and are never delivered; do not create commits. Public web search and reads of public URLs are enabled by default. Access authenticated external systems only when this assignment explicitly instructs it. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Include source URLs and the research date. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents. Do not implement changes for delivery.\n\n${item.task}`;
-    await promptAgent(state, paneId, prompt, signal);
-    const agent = await getAgent(state, paneId, signal);
+    await promptAgent(state.deps, paneId, prompt, signal);
+    const agent = await getAgent(state.deps, paneId, signal);
     if (agent.identity !== "omp")
       throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
     const record: WorkerRecord = {
@@ -407,8 +332,8 @@ async function launchWorker(
             project: preflight.project,
             projectPath: preflight.projectPath,
             worktree: directory,
-            lease_id: lease!.lease_id,
-            lease_holder: lease!.lease_holder,
+            lease_id: lease!.leaseId,
+            lease_holder: lease!.leaseHolder,
             delivery_base: preflight.starts[item.name] ?? preflight.head,
             branch: preflight.branch,
             push_to: item.pushTo,
@@ -423,22 +348,8 @@ async function launchWorker(
   } catch (error) {
     const message = errorMessage(error);
     if (!ompMayHaveStarted) {
-      if (tabId) await bestEffort(state, "herdr", ["tab", "close", tabId], signal);
-      if (lease)
-        await bestEffort(
-          state,
-          "treehouse",
-          [
-            "return",
-            "--force",
-            "--if-lease-id",
-            lease.lease_id,
-            "--if-lease-holder",
-            lease.lease_holder,
-            lease.path,
-          ],
-          signal,
-        );
+      if (tabId) await closeTabBestEffort(state.deps, tabId, signal);
+      if (lease) await returnLeaseBestEffort(state.deps, lease, signal);
       else if (directory) {
         try {
           await rm(directory, { recursive: true });
@@ -464,8 +375,8 @@ async function launchWorker(
               project: preflight.project,
               projectPath: preflight.projectPath,
               worktree: directory,
-              lease_id: lease!.lease_id,
-              lease_holder: lease!.lease_holder,
+              lease_id: lease!.leaseId,
+              lease_holder: lease!.leaseHolder,
               delivery_base: preflight.starts[item.name] ?? preflight.head,
               branch: preflight.branch,
               push_to: item.pushTo,
@@ -490,7 +401,7 @@ async function launchWorker(
       ...(directory
         ? preflight.scope === "independent"
           ? { working_directory: directory }
-          : { worktree: directory, lease_id: lease?.lease_id }
+          : { worktree: directory, lease_id: lease?.leaseId }
         : {}),
       ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}),
       ...(paneId ? { pane_id: paneId } : {}),

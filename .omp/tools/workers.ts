@@ -3,10 +3,19 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { lstat, readFile, rm } from "node:fs/promises";
 import {
+  abortRebaseBestEffort,
+  currentBranchAt,
+  fastForward,
+  headAt,
+  pushHead,
+  rebaseOnto,
+  statusAt,
+} from "../runtime/git";
+import { closeTab, getAgent, promptAgent, readAgent, waitForAgent } from "../runtime/herdr";
+import { returnLease } from "../runtime/treehouse";
+import {
   errorMessage,
   NAME,
-  parseJson,
-  stringAt,
   text,
   type RuntimeDeps,
   type WorkerRecord,
@@ -51,103 +60,6 @@ export function stateFor(pi: CustomToolAPI): WorkerState {
   };
   states.set(pi, state);
   return state;
-}
-
-export async function execCommand(
-  state: WorkerState,
-  command: string,
-  args: string[],
-  options: { cwd?: string; signal?: AbortSignal; timeout?: number } = {},
-): Promise<string> {
-  const result = await state.deps.exec(command, args, options);
-  if (result.code !== 0)
-    throw new Error(
-      `${command} ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim() || `exit ${result.code}`}`,
-    );
-  return result.stdout.trim();
-}
-
-export async function bestEffort(
-  state: WorkerState,
-  command: string,
-  args: string[],
-  signal?: AbortSignal,
-): Promise<void> {
-  try {
-    await execCommand(state, command, args, { signal });
-  } catch (error) {
-    state.deps.logger.warn?.("Visible worker cleanup failed", {
-      command,
-      error: errorMessage(error),
-    });
-  }
-}
-
-export async function getAgent(
-  state: WorkerState,
-  pane: string,
-  signal?: AbortSignal,
-): Promise<{ identity: string; status: string }> {
-  const value = parseJson(
-    await execCommand(state, "herdr", ["agent", "get", pane], { signal }),
-    "herdr agent get",
-  );
-  return {
-    identity: stringAt(value, ["result", "agent", "agent"]) ?? "",
-    status: stringAt(value, ["result", "agent", "agent_status"]) ?? "",
-  };
-}
-
-export async function promptAgent(
-  state: WorkerState,
-  pane: string,
-  message: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  try {
-    await execCommand(
-      state,
-      "herdr",
-      [
-        "agent",
-        "prompt",
-        pane,
-        message,
-        "--wait",
-        "--until",
-        "working",
-        "--until",
-        "done",
-        "--until",
-        "blocked",
-        "--timeout",
-        "30000",
-      ],
-      { signal },
-    );
-  } catch (error) {
-    if (!errorMessage(error).includes("agent_prompt_stalled")) throw error;
-    // Herdr has already typed the text when startup stalls; retry only Enter to avoid duplicating the assignment.
-    await execCommand(state, "herdr", ["agent", "send-keys", pane, "enter"], { signal });
-    await execCommand(
-      state,
-      "herdr",
-      [
-        "agent",
-        "wait",
-        pane,
-        "--until",
-        "working",
-        "--until",
-        "done",
-        "--until",
-        "blocked",
-        "--timeout",
-        "5000",
-      ],
-      { signal },
-    );
-  }
 }
 
 export function isCurrent(state: WorkerState, record: WorkerRecord): boolean {
@@ -253,12 +165,12 @@ async function sendWorker(
   record.generation++;
   record.watch?.abort();
   try {
-    await promptAgent(state, record.pane_id, message, signal);
+    await promptAgent(state.deps, record.pane_id, message, signal);
   } catch (error) {
     record.error = errorMessage(error);
   }
   try {
-    const agent = await getAgent(state, record.pane_id, signal);
+    const agent = await getAgent(state.deps, record.pane_id, signal);
     if (agent.identity !== "omp")
       throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
     if (agent.status === "working") {
@@ -284,24 +196,9 @@ function watchWorker(state: WorkerState, record: WorkerRecord): void {
   record.watch = controller;
   void (async () => {
     try {
-      await execCommand(
-        state,
-        "herdr",
-        [
-          "agent",
-          "wait",
-          record.pane_id,
-          "--until",
-          "idle",
-          "--until",
-          "done",
-          "--until",
-          "blocked",
-        ],
-        { signal: controller.signal },
-      );
+      await waitForAgent(state.deps, record.pane_id, controller.signal);
       if (!isCurrent(state, record) || record.generation !== generation) return;
-      const agent = await getAgent(state, record.pane_id, controller.signal);
+      const agent = await getAgent(state.deps, record.pane_id, controller.signal);
       if (!isCurrent(state, record) || record.generation !== generation) return;
       if (agent.status === "idle" || agent.status === "done") await settleWorker(state, record);
       else if (agent.status === "blocked") {
@@ -325,29 +222,13 @@ function watchWorker(state: WorkerState, record: WorkerRecord): void {
 async function settleWorker(state: WorkerState, record: WorkerRecord): Promise<void> {
   const generation = ++record.generation;
   try {
-    const output = await execCommand(state, "herdr", [
-      "agent",
-      "read",
-      record.pane_id,
-      "--source",
-      "recent-unwrapped",
-      "--lines",
-      "200",
-      "--format",
-      "text",
-    ]);
+    const output = await readAgent(state.deps, record.pane_id);
     if (record.generation !== generation || !isCurrent(state, record)) return;
     let outcome: Record<string, unknown>;
     if (record.kind === "scout") {
       outcome = await completeScout(record, output);
     } else {
-      const dirty = await execCommand(state, "git", [
-        "-C",
-        record.worktree!,
-        "status",
-        "--porcelain=v1",
-        "--untracked-files=all",
-      ]);
+      const dirty = await statusAt(state.deps, record.worktree!);
       if (dirty) throw new Error("Worker worktree contains uncommitted changes");
       outcome = record.push_to
         ? await pushWorker(state, record, output)
@@ -391,13 +272,7 @@ async function pushWorker(
   record: WorkerRecord,
   output: string,
 ): Promise<Record<string, unknown>> {
-  await execCommand(state, "git", [
-    "-C",
-    record.worktree!,
-    "push",
-    "origin",
-    `HEAD:refs/heads/${record.push_to}`,
-  ]);
+  await pushHead(state.deps, record.worktree!, record.push_to!);
   return terminal(record, "pushed", output, undefined, record.push_to);
 }
 
@@ -427,62 +302,33 @@ async function deliverLocal(
   record: WorkerRecord,
   output: string,
 ): Promise<Record<string, unknown>> {
-  const workerHead = (
-    await execCommand(state, "git", ["-C", record.worktree!, "rev-parse", "HEAD"])
-  ).trim();
+  const workerHead = await headAt(state.deps, record.worktree!);
   if (workerHead === record.delivery_base)
     return terminal(record, "no_changes", output, undefined, record.branch);
   await assertTarget(state, record);
   try {
-    await execCommand(state, "git", ["-C", record.projectPath!, "merge", "--ff-only", workerHead]);
+    await fastForward(state.deps, record.projectPath!, workerHead);
   } catch (firstError) {
-    const current = (
-      await execCommand(state, "git", ["-C", record.projectPath!, "rev-parse", "HEAD"])
-    ).trim();
+    const current = await headAt(state.deps, record.projectPath!);
     if (current === record.delivery_base) throw firstError;
     try {
-      await execCommand(state, "git", [
-        "-C",
-        record.worktree!,
-        "rebase",
-        "--onto",
-        current,
-        record.delivery_base!,
-        workerHead,
-      ]);
+      await rebaseOnto(state.deps, record.worktree!, current, record.delivery_base!, workerHead);
     } catch (error) {
-      await bestEffort(state, "git", ["-C", record.worktree!, "rebase", "--abort"]);
+      await abortRebaseBestEffort(state.deps, record.worktree!);
       throw error;
     }
     record.delivery_base = current;
-    const rebasedHead = (
-      await execCommand(state, "git", ["-C", record.worktree!, "rev-parse", "HEAD"])
-    ).trim();
+    const rebasedHead = await headAt(state.deps, record.worktree!);
     await assertTarget(state, record);
-    await execCommand(state, "git", ["-C", record.projectPath!, "merge", "--ff-only", rebasedHead]);
+    await fastForward(state.deps, record.projectPath!, rebasedHead);
   }
   return terminal(record, "merged", output, undefined, record.branch);
 }
 
 async function assertTarget(state: WorkerState, record: WorkerRecord): Promise<void> {
-  const dirty = await execCommand(state, "git", [
-    "-C",
-    record.projectPath!,
-    "status",
-    "--porcelain=v1",
-    "--untracked-files=all",
-  ]);
+  const dirty = await statusAt(state.deps, record.projectPath!);
   if (dirty) throw new Error("Registered project became dirty before delivery");
-  const branch = (
-    await execCommand(state, "git", [
-      "-C",
-      record.projectPath!,
-      "symbolic-ref",
-      "--quiet",
-      "--short",
-      "HEAD",
-    ])
-  ).trim();
+  const branch = await currentBranchAt(state.deps, record.projectPath!);
   if (!branch || branch !== record.branch)
     throw new Error(
       `Registered project branch changed before delivery (expected ${record.branch})`,
@@ -496,21 +342,17 @@ async function finishWorker(
 ): Promise<void> {
   if (!isCurrent(state, record)) return;
   try {
-    await execCommand(state, "herdr", ["tab", "close", record.tab_id]);
+    await closeTab(state.deps, record.tab_id);
     if (!isCurrent(state, record)) return;
     if (record.scope === "independent") {
       if (!record.working_directory) throw new Error("Independent working directory is missing");
       await rm(record.working_directory, { recursive: true });
     } else {
-      await execCommand(state, "treehouse", [
-        "return",
-        "--force",
-        "--if-lease-id",
-        record.lease_id!,
-        "--if-lease-holder",
-        record.lease_holder!,
-        record.worktree!,
-      ]);
+      await returnLease(state.deps, {
+        path: record.worktree!,
+        leaseId: record.lease_id!,
+        leaseHolder: record.lease_holder!,
+      });
     }
     state.records.delete(record.name);
     notify(state, outcome);

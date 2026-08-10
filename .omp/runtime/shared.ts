@@ -88,6 +88,20 @@ export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+export async function execCommand(
+  deps: RuntimeDeps,
+  command: string,
+  args: string[],
+  options: { cwd?: string; signal?: AbortSignal; timeout?: number } = {},
+): Promise<string> {
+  const result = await deps.exec(command, args, options);
+  if (result.code !== 0)
+    throw new Error(
+      `${command} ${args.join(" ")} failed: ${(result.stderr || result.stdout).trim() || `exit ${result.code}`}`,
+    );
+  return result.stdout.trim();
+}
+
 export function parseJson(value: string, command: string): unknown {
   try {
     return JSON.parse(value);
