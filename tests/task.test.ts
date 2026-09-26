@@ -231,6 +231,25 @@ describe("project-independent scouts", () => {
     ).toBe(false);
   });
 
+  test("rejects research inside a registered project before creating a space", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const instance = runtime(root, fake, [], undefined, join(project, "research"));
+    await register(instance, project);
+    const result = await instance.runTask({
+      scope: "independent",
+      context: "",
+      tasks: [{ kind: "scout", name: "outside", task: "Research" }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("inside reserved project context"),
+    });
+    expect(
+      fake.calls.some((call) => call.command === "herdr" && call.args.includes("create")),
+    ).toBe(false);
+  });
+
   test("launches concurrently without registry, Git, or Treehouse and states provenance policy", async () => {
     const launched = await launchedIndependent([
       { kind: "scout", name: "market-a", task: "Research A" },
@@ -286,6 +305,36 @@ describe("project-independent scouts", () => {
       "ponytail",
     ])
       expect(prompt).not.toContain(excluded);
+  });
+
+  test("runs scouts as tabs in one shared research space", async () => {
+    const launched = await launchedIndependent([
+      { kind: "scout", name: "first", task: "Research" },
+      { kind: "scout", name: "second", task: "Research" },
+    ]);
+    await launched.instance.runTask({
+      scope: "independent",
+      context: "",
+      tasks: [{ kind: "scout", name: "third", task: "Research" }],
+    });
+    const herdr = (group: string, action: string) =>
+      launched.fake.calls.filter(
+        (call) => call.command === "herdr" && call.args[0] === group && call.args[1] === action,
+      );
+    expect(herdr("workspace", "create").map((call) => call.args)).toEqual([
+      expect.arrayContaining(["--label", "research"]),
+    ]);
+    const tabs = herdr("tab", "create");
+    expect(tabs.map((call) => call.args[call.args.indexOf("--workspace") + 1])).toEqual([
+      "space-research",
+      "space-research",
+      "space-research",
+    ]);
+    expect(tabs.map((call) => call.args[call.args.indexOf("--label") + 1]).sort()).toEqual([
+      "scout·first",
+      "scout·second",
+      "scout·third",
+    ]);
   });
 
   test("settles reports before removing the neutral directory", async () => {

@@ -31,6 +31,23 @@ export function headAt(
   return at(deps, directory, ["rev-parse", "HEAD"], signal);
 }
 
+export async function isAncestor(
+  deps: RuntimeDeps,
+  directory: string,
+  ancestor: string,
+  descendant: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
+  const result = await deps.exec(
+    "git",
+    ["-C", directory, "merge-base", "--is-ancestor", ancestor, descendant],
+    { signal },
+  );
+  if (result.code === 0) return true;
+  if (result.code === 1) return false;
+  throw new Error(`git merge-base failed: ${errorMessage(result.stderr || result.stdout)}`);
+}
+
 export function checkBranch(
   deps: RuntimeDeps,
   branch: string,

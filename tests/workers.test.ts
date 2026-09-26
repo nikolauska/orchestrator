@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { join } from "node:path";
 import {
   cleanup,
   eventually,
@@ -54,8 +55,96 @@ describe("launch and control", () => {
         .every((call) => !call.args.includes("--session")),
     ).toBe(true);
     expect(
-      fake.calls.find((call) => call.command === "herdr" && call.args.includes("create"))?.args,
-    ).toContain("workspace");
+      fake.calls.find((call) => call.command === "herdr" && call.args[0] === "worktree")?.args,
+    ).toContain(project);
+  });
+
+  test("nests project workers under one project space named after the registration", async () => {
+    const { fake } = await launchedPair();
+    expect(
+      fake.workspaces
+        .filter((item) => item.worktree && !item.worktree.is_linked_worktree)
+        .map((item) => item.label),
+    ).toEqual(["fixture"]);
+    expect(
+      fake.workspaces
+        .filter((item) => item.worktree?.is_linked_worktree)
+        .map((item) => item.label)
+        .sort(),
+    ).toEqual(["impl·alpha", "impl·beta"]);
+  });
+
+  test("keeps the name of a project space the user already had", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    fake.workspaces.push({ workspace_id: "space-mine", label: "my checkout", cwd: project });
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "scout", name: "look", task: "work" }],
+    });
+    expect(fake.workspaces.map((item) => item.label)).toEqual(["my checkout", "scout·look"]);
+  });
+
+  test("refuses a worktree already open in Herdr without closing it", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    fake.workspaces.push({
+      workspace_id: "space-other",
+      label: "someone",
+      checkout: join(project, ".treehouse-taken"),
+    });
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "implementation", name: "taken", task: "work" }],
+    });
+    expect((result.details as Array<Record<string, unknown>>)[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("already open"),
+    });
+    expect(fake.workspaces.find((item) => item.workspace_id === "space-other")?.label).toBe(
+      "someone",
+    );
+    expect(
+      fake.calls.some((call) => call.command === "treehouse" && call.args[0] === "return"),
+    ).toBe(true);
+    expect(fake.calls.some((call) => call.command === "herdr" && call.args.includes("start"))).toBe(
+      false,
+    );
+  });
+  test("retains a lease when a pre-start space cannot close", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    fake.shellWaitFails = true;
+    fake.spaceCloseFails = true;
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "implementation", name: "kept", task: "work" }],
+    });
+    expect((result.details as Array<Record<string, unknown>>)[0]).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("cleanup failed"),
+      worktree: join(project, ".treehouse-kept"),
+    });
+    expect(
+      fake.calls.some((call) => call.command === "treehouse" && call.args[0] === "return"),
+    ).toBe(false);
+    expect((await instance.runWorkers({ op: "list" })).details).toHaveLength(1);
+    expect(
+      (
+        (await runtime(root, fake, []).runWorkers({ op: "list" })).details as Array<
+          Record<string, unknown>
+        >
+      )[0]?.name,
+    ).toBe("kept");
   });
 
   test("selects an OMP model role per task", async () => {
@@ -252,7 +341,8 @@ describe("delivery", () => {
       fake.calls
         .filter((call) => call.command === "herdr" && call.args.includes("close"))
         .map((call) => call.args.at(-1)),
-    ).toEqual(["tab-alpha", "tab-beta"]);
+    ).toEqual(["space-alpha", "space-beta"]);
+    expect(fake.workspaces.map((item) => item.label)).toEqual(["fixture"]);
     const returns = fake.calls.filter(
       (call) => call.command === "treehouse" && call.args[0] === "return",
     );
@@ -320,7 +410,7 @@ describe("delivery", () => {
     expect((await conflict.instance.runWorkers({ op: "list" })).details).toHaveLength(2);
   });
 
-  test("dispose aborts watchers without cleanup", async () => {
+  test("dispose aborts watchers without cleanup and keeps workers recorded", async () => {
     const { fake, instance } = await launchedPair();
     instance.dispose();
     await new Promise<void>(queueMicrotask);
@@ -330,6 +420,94 @@ describe("delivery", () => {
     expect(
       fake.calls.some((call) => call.command === "treehouse" && call.args[0] === "return"),
     ).toBe(false);
-    expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
+    expect(
+      ((await instance.runWorkers({ op: "list" })).details as Array<Record<string, unknown>>).map(
+        (item) => item.name,
+      ),
+    ).toEqual(["alpha", "beta"]);
+  });
+});
+describe("durable state", () => {
+  test("resumes recorded workers after a restart and delivers finished ones", async () => {
+    const { root, fake, instance } = await launchedPair();
+    instance.dispose();
+    fake.status.set("pane:alpha", "done");
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const restarted = runtime(root, fake, messages);
+    await restarted.runWorkers({ op: "list" });
+    await eventually(() => expect(messages.length).toBe(1));
+    expect(messages[0]!.message).toContain('"name": "alpha"');
+    expect(messages[0]!.message).toContain('"status": "merged"');
+    fake.settle("beta");
+    await eventually(() => expect(messages.length).toBe(2));
+    expect((await runtime(root, fake, []).runWorkers({ op: "list" })).details).toEqual([]);
+  });
+
+  test("reports a worker whose agent disappeared while OMP was down", async () => {
+    const { root, fake, instance } = await launchedPair();
+    instance.dispose();
+    fake.goneAgents.add("pane:alpha");
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const listed = (await runtime(root, fake, messages).runWorkers({ op: "list" }))
+      .details as Array<Record<string, unknown>>;
+    expect(listed.find((item) => item.name === "alpha")).toMatchObject({
+      status: "failed",
+      error: expect.stringContaining("could not be resumed"),
+    });
+    expect(messages.map((item) => item.message).join("\n")).toContain("could not be resumed");
+    expect(
+      fake.calls.some((call) => call.command === "treehouse" && call.args[0] === "return"),
+    ).toBe(false);
+  });
+
+  test("close refuses unlanded implementation work unless discard is set", async () => {
+    const { root, fake, instance } = await launchedPair();
+    const refused = (await instance.runWorkers({ op: "close", names: ["alpha"] })).details as Array<
+      Record<string, unknown>
+    >;
+    expect(refused[0]).toMatchObject({
+      name: "alpha",
+      close: "refused",
+      reason: expect.stringContaining("undelivered commits"),
+    });
+    expect(fake.calls.some((call) => call.command === "herdr" && call.args.includes("close"))).toBe(
+      false,
+    );
+
+    const alphaPath = [...fake.workerHeads.keys()].find((path) => path.endsWith("alpha"))!;
+    const betaPath = [...fake.workerHeads.keys()].find((path) => path.endsWith("beta"))!;
+    fake.workerHeads.set(alphaPath, "base");
+    const closed = (await instance.runWorkers({ op: "close", names: ["alpha"] })).details as Array<
+      Record<string, unknown>
+    >;
+    expect(closed[0]).toMatchObject({ name: "alpha", close: "closed" });
+
+    fake.dirtyWorkers.add(betaPath);
+    const discarded = (await instance.runWorkers({ op: "close", names: ["beta"], discard: true }))
+      .details as Array<Record<string, unknown>>;
+    expect(discarded[0]).toMatchObject({ name: "beta", close: "closed" });
+
+    expect(
+      fake.calls.filter((call) => call.command === "treehouse" && call.args[0] === "return"),
+    ).toHaveLength(2);
+    expect(fake.workspaces.map((item) => item.label)).toEqual(["fixture"]);
+    expect((await runtime(root, fake, []).runWorkers({ op: "list" })).details).toEqual([]);
+  });
+  test("can close a worker whose commit was delivered before cleanup failed", async () => {
+    const { fake, instance, messages } = await launchedPair();
+    fake.spaceCloseFails = true;
+    fake.settle("alpha");
+    await eventually(() =>
+      expect(messages.some((item) => item.message.includes("Cleanup failed"))).toBe(true),
+    );
+    expect(fake.projectHead).toBe("head-alpha");
+    fake.projectHead = "head-later";
+    fake.ancestors.add("head-alpha:head-later");
+    fake.spaceCloseFails = false;
+    const result = (await instance.runWorkers({ op: "close", names: ["alpha"] })).details as Array<
+      Record<string, unknown>
+    >;
+    expect(result[0]).toMatchObject({ close: "closed", name: "alpha" });
+    expect(fake.workspaces.map((item) => item.label).sort()).toEqual(["fixture", "impl·beta"]);
   });
 });

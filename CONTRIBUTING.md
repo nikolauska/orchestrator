@@ -7,7 +7,9 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 ```text
 .omp/tools/*.ts                   Custom tool factories
 .omp/runtime/shared.ts             Shared types and helpers
+.omp/runtime/store.ts              Durable worker registry backed by SQLite
 .omp/projects.json                Local project registry; ignored, never commit
+.omp/orchestrator.db              Local worker state; ignored, never commit
 docs/domain/                      Confirmed customer-visible behavior
 tests/test-helpers.ts             Shared worker test fixtures
 tests/projects.test.ts             Projects tool behavior tests
@@ -23,8 +25,8 @@ tests/workers.test.ts              Workers tool behavior tests
 - Match the existing tab indentation.
 - Add comments only when they explain why a non-obvious constraint exists.
 - Keep tool schemas, runtime validation, and tests synchronized when changing an input or outcome.
-- Update `docs/domain/visible-worker-agents.md` only when confirmed customer-visible behavior changes. Keep implementation details out of domain documentation.
-- Preserve retained worktrees and tabs on blocked, dirty, conflicting, or uncertain outcomes. Cleanup must never discard unlanded work.
+- Update the relevant `docs/domain/*.md` when confirmed customer-visible behavior changes. Keep implementation details out of domain documentation.
+- Preserve retained worktrees and worker spaces on blocked, dirty, conflicting, or uncertain outcomes. Cleanup must never discard unlanded work.
 
 ## Validation
 

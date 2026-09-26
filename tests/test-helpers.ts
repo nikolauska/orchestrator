@@ -3,7 +3,7 @@ import { zod } from "@oh-my-pi/pi-coding-agent";
 import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import projectsTool from "../.omp/tools/projects";
 import taskTool from "../.omp/tools/orchestrator_task";
 import type { ProjectParams, TaskParams, WorkersParams, ExecResult } from "../.omp/runtime/shared";
@@ -11,6 +11,13 @@ import workersTool from "../.omp/tools/workers";
 
 type Call = { command: string; args: string[]; cwd?: string };
 type Waiter = { resolve: () => void; reject: (error: Error) => void };
+export type FakeWorkspace = {
+  workspace_id: string;
+  label: string;
+  cwd?: string;
+  checkout?: string;
+  worktree?: { repo_root: string; is_linked_worktree: boolean; checkout_path?: string };
+};
 
 type ToolLike = {
   execute(
@@ -51,6 +58,7 @@ export class FakeExec {
   readonly workerHeads = new Map<string, string>();
   readonly branchHeads = new Map<string, string>([["main", "base"]]);
   readonly dirtyWorkers = new Set<string>();
+  readonly ancestors = new Set<string>();
   readonly outputs = new Map<string, string>();
   projectHead = "base";
   projectBranch = "main";
@@ -59,7 +67,11 @@ export class FakeExec {
   gitInitFails = false;
   gitCommitFails = false;
   promptStallsOnce = false;
+  shellWaitFails = false;
+  spaceCloseFails = false;
   agentIdentity = "omp";
+  readonly goneAgents = new Set<string>();
+  readonly workspaces: FakeWorkspace[] = [];
   #reportedPromptStall = false;
   readonly project: string;
 
@@ -85,17 +97,12 @@ export class FakeExec {
       );
     }
     if (command === "treehouse" && args[0] === "return") return this.#ok();
-    if (command === "herdr" && args.includes("tab") && args.includes("create")) {
-      const name = args[args.indexOf("--label") + 1];
-      return this.#ok(
-        JSON.stringify({
-          result: { tab: { tab_id: `tab-${name}` }, root_pane: { pane_id: `pane:${name}` } },
-        }),
-      );
+    if (command === "herdr") {
+      const space = this.#space(args);
+      if (space) return space;
     }
-    if (command === "herdr" && args.includes("tab") && args.includes("close")) return this.#ok();
     if (command === "herdr" && args.includes("pane") && args.includes("wait-output"))
-      return this.#ok("{}");
+      return this.shellWaitFails ? this.#fail("shell unavailable") : this.#ok("{}");
     if (command === "herdr" && args.includes("agent") && args.includes("start"))
       return this.#ok("{}");
     if (command === "herdr" && args.includes("agent") && args.includes("send-keys")) {
@@ -113,6 +120,10 @@ export class FakeExec {
     }
     if (command === "herdr" && args.includes("agent") && args.includes("get")) {
       const pane = args.at(-1)!;
+      if (this.goneAgents.has(pane))
+        return this.#fail(
+          `{"error":{"code":"agent_not_found","message":"agent target ${pane} not found"}}`,
+        );
       return this.#ok(
         JSON.stringify({
           result: {
@@ -183,6 +194,8 @@ export class FakeExec {
       return this.#ok(
         path === this.project ? this.projectHead : (this.workerHeads.get(path) ?? "missing"),
       );
+    if (sub[0] === "merge-base" && sub[1] === "--is-ancestor")
+      return this.ancestors.has(`${sub[2]}:${sub[3]}`) ? this.#ok() : this.#fail("not ancestor");
     if (sub[0] === "merge") {
       const head = sub.at(-1)!;
       if (this.projectHead !== "base" && !head.startsWith("rebased-"))
@@ -200,6 +213,84 @@ export class FakeExec {
     return this.#fail(`unexpected git -C: ${sub.join(" ")}`);
   }
 
+  /** Mirrors Herdr's grouping: a worktree nests under the repository's space, adopting a plain one. */
+  #space(args: string[]): ExecResult | undefined {
+    const option = (name: string) => args[args.indexOf(name) + 1]!;
+    const worker = (label: string) => label.split("·").at(-1)!;
+    const [group, action] = args;
+    if (group === "workspace" && action === "list")
+      return this.#ok(JSON.stringify({ result: { workspaces: this.workspaces } }));
+    if (group === "workspace" && action === "create") {
+      const label = option("--label");
+      const id = `space-${label}`;
+      this.workspaces.push({ workspace_id: id, label, cwd: option("--cwd") });
+      return this.#ok(
+        JSON.stringify({
+          result: {
+            workspace: { workspace_id: id },
+            tab: { tab_id: `${id}:t1` },
+            root_pane: { pane_id: `${id}:p1` },
+          },
+        }),
+      );
+    }
+    if (group === "workspace" && action === "rename") {
+      this.workspaces.find((item) => item.workspace_id === args[2])!.label = args[3]!;
+      return this.#ok();
+    }
+    if (group === "workspace" && action === "close") {
+      if (this.spaceCloseFails) return this.#fail("close failed");
+      const index = this.workspaces.findIndex((item) => item.workspace_id === args[2]);
+      if (index < 0)
+        return this.#fail(`{"error":{"code":"workspace_not_found","message":"missing"}}`);
+      this.workspaces.splice(index, 1);
+      return this.#ok();
+    }
+    if (group === "worktree" && action === "open") {
+      const repository = option("--cwd");
+      const checkout = option("--path");
+      const label = basename(checkout);
+      const open = this.workspaces.find((item) => item.checkout === checkout);
+      if (open) return this.#ok(JSON.stringify({ result: { already_open: true } }));
+      const parent =
+        this.workspaces.find((item) => item.worktree?.repo_root === repository) ??
+        this.workspaces.find((item) => !item.worktree && item.cwd === repository);
+      if (parent) parent.worktree = { repo_root: repository, is_linked_worktree: false };
+      else
+        this.workspaces.push({
+          workspace_id: "space-parent",
+          label: basename(repository),
+          worktree: { repo_root: repository, is_linked_worktree: false },
+        });
+      const name = label.split("-").at(-1)!;
+      this.workspaces.push({
+        workspace_id: `space-${name}`,
+        label,
+        checkout,
+        worktree: { repo_root: repository, is_linked_worktree: true, checkout_path: checkout },
+      });
+      return this.#ok(
+        JSON.stringify({
+          result: {
+            already_open: false,
+            workspace: { workspace_id: `space-${name}` },
+            tab: { tab_id: `tab-${name}` },
+            root_pane: { pane_id: `pane:${name}` },
+          },
+        }),
+      );
+    }
+    if (group === "tab" && action === "create") {
+      const name = worker(option("--label"));
+      return this.#ok(
+        JSON.stringify({
+          result: { tab: { tab_id: `tab-${name}` }, root_pane: { pane_id: `pane:${name}` } },
+        }),
+      );
+    }
+    if (group === "tab" && action === "close") return this.#ok();
+    return undefined;
+  }
   #ok(stdout = ""): ExecResult {
     return { stdout, stderr: "", code: 0 };
   }

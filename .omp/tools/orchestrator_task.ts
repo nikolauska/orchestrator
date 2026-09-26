@@ -9,6 +9,7 @@ import {
   text,
   type IndependentTaskParams,
   type Preflight,
+  type ProjectPreflight,
   type ProjectTaskParams,
   type TaskItem,
   type TaskParams,
@@ -26,28 +27,37 @@ import {
   version as gitVersion,
 } from "../runtime/git";
 import {
-  closeTabBestEffort,
+  closeWorkerSpace,
   createTab,
+  createWorkspace,
   ensureIntegration,
   getAgent,
+  listWorkspaces,
+  openWorktree,
   promptAgent,
+  renameWorkspace,
   startOmpAgent,
   waitForShell,
+  type HerdrSpace,
 } from "../runtime/herdr";
 import {
   acquireLease,
-  returnLeaseBestEffort,
+  returnLease,
   type TreehouseLease,
   version as treehouseVersion,
 } from "../runtime/treehouse";
 import {
   adoptWorker,
-  disposeWorkers,
+  handleSession,
   hasWorker,
+  persist,
   publicRecord,
+  resumeWorkers,
   stateFor,
   type WorkerState,
 } from "./workers";
+
+const RESEARCH_SPACE = "research";
 
 export async function runTask(
   state: WorkerState,
@@ -72,6 +82,7 @@ export async function runTask(
         })),
       };
     }
+    await resumeWorkers(state);
     const active = params.tasks.find((item) => hasWorker(state, item.name));
     if (active) throw new Error(`Worker name already retained: ${active.name}`);
     const preflight = await preflightTask(state, root, params, signal);
@@ -145,13 +156,23 @@ async function preflightTask(
   signal?: AbortSignal,
 ): Promise<Preflight> {
   if ("scope" in params) {
-    const workspace = await workspaceFor(state, false, signal);
+    await requireHerdr(state, false, signal);
     const projects = await readProjects(root, signal);
     const canonicalRoot = await realpath(state.root);
+    const forbiddenRoots = [canonicalRoot, ...Object.values(projects)];
+    await mkdir(state.neutralRoot, { recursive: true });
+    const base = await realpath(state.neutralRoot);
+    for (const forbidden of forbiddenRoots) {
+      const placement = relative(forbidden, base);
+      if (!placement || (placement !== ".." && !placement.startsWith(`..${sep}`)))
+        throw new Error(
+          `Neutral working directory base is inside reserved project context: ${forbidden}`,
+        );
+    }
     return {
       scope: "independent",
-      workspace,
-      forbiddenRoots: [canonicalRoot, ...Object.values(projects)],
+      workspace: await researchSpace(state, signal),
+      forbiddenRoots,
     };
   }
   const projects = await readProjects(root, signal);
@@ -160,7 +181,7 @@ async function preflightTask(
     throw new Error(
       `Unknown registered project: ${params.project}. Registered: ${Object.keys(projects).sort().join(", ") || "(none)"}`,
     );
-  const workspace = await workspaceFor(state, true, signal);
+  await requireHerdr(state, true, signal);
   let canonical: string;
   try {
     canonical = await realpath(projectPath);
@@ -218,7 +239,6 @@ async function preflightTask(
     scope: "project",
     project: params.project,
     projectPath: canonical,
-    workspace,
     head: initialHead,
     branch,
     localChanges,
@@ -226,14 +246,16 @@ async function preflightTask(
   };
 }
 
-async function workspaceFor(
+async function requireHerdr(
   state: WorkerState,
   projectScope: boolean,
   signal?: AbortSignal,
-): Promise<string> {
-  const pane = state.env.HERDR_PANE_ID;
-  const workspace = pane?.split(":", 1)[0];
-  if (state.env.HERDR_ENV !== "1" || !state.env.HERDR_SOCKET_PATH || !workspace)
+): Promise<void> {
+  if (
+    state.env.HERDR_ENV !== "1" ||
+    !state.env.HERDR_SOCKET_PATH ||
+    !state.env.HERDR_PANE_ID?.split(":", 1)[0]
+  )
     throw new Error(
       "Herdr's OMP integration is required; run `herdr integration install omp` and restart OMP",
     );
@@ -241,7 +263,59 @@ async function workspaceFor(
     ensureIntegration(state.deps, signal),
     ...(projectScope ? [gitVersion(state.deps, signal), treehouseVersion(state.deps, signal)] : []),
   ]);
-  return workspace;
+}
+
+/** Runs Herdr space lookups and creation one at a time so parallel launches never create duplicate spaces. */
+function serializeSpaces<T>(state: WorkerState, work: () => Promise<T>): Promise<T> {
+  const result = state.spaceQueue.then(work);
+  state.spaceQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function researchSpace(state: WorkerState, signal?: AbortSignal): Promise<string> {
+  return serializeSpaces(state, async () => {
+    const existing = (await listWorkspaces(state.deps, signal)).find(
+      (workspace) => workspace.label === RESEARCH_SPACE,
+    );
+    if (existing) return existing.workspaceId;
+    await mkdir(state.neutralRoot, { recursive: true });
+    return (await createWorkspace(state.deps, state.neutralRoot, RESEARCH_SPACE, signal))
+      .workspaceId;
+  });
+}
+
+function projectSpace(
+  state: WorkerState,
+  preflight: ProjectPreflight,
+  checkout: string,
+  label: string,
+  signal?: AbortSignal,
+): Promise<HerdrSpace> {
+  return serializeSpaces(state, async () => {
+    const before = new Set(
+      (await listWorkspaces(state.deps, signal)).map((workspace) => workspace.workspaceId),
+    );
+    const space = await openWorktree(state.deps, preflight.projectPath, checkout, signal);
+    try {
+      await renameWorkspace(state.deps, space.workspaceId, label, signal);
+      const parent = (await listWorkspaces(state.deps, signal)).find(
+        (workspace) => workspace.repoRoot === preflight.projectPath && !workspace.linked,
+      );
+      // Herdr names a parent it creates after the checkout folder; a space the user already had keeps its label.
+      if (parent && !before.has(parent.workspaceId))
+        await renameWorkspace(state.deps, parent.workspaceId, preflight.project, signal);
+    } catch (error) {
+      // The name is cosmetic; the worker space is already open and must still be tracked.
+      state.deps.logger.warn?.("Project space rename failed", {
+        project: preflight.project,
+        error: errorMessage(error),
+      });
+    }
+    return space;
+  });
 }
 
 async function launchWorker(
@@ -255,6 +329,7 @@ async function launchWorker(
   const leaseHolder = `omp-orchestrator:${item.name}`;
   let lease: TreehouseLease | undefined;
   let directory: string | undefined;
+  let workspaceId: string | undefined;
   let tabId: string | undefined;
   let paneId: string | undefined;
   let ompMayHaveStarted = false;
@@ -302,9 +377,18 @@ async function launchWorker(
     }
     if (!directory) throw new Error("Worker directory was not allocated");
     if (reportPath) await mkdir(dirname(reportPath), { recursive: true });
-    const tab = await createTab(state.deps, preflight.workspace, directory, item.name, signal);
-    tabId = tab.tabId;
-    paneId = tab.paneId;
+    // The kind prefix tells implementation work from research at a glance in Herdr's sidebar.
+    const label = `${item.kind === "scout" ? "scout" : "impl"}·${item.name}`;
+    const space: HerdrSpace =
+      preflight.scope === "project"
+        ? await projectSpace(state, preflight, directory, label, signal)
+        : {
+            workspaceId: preflight.workspace,
+            ...(await createTab(state.deps, preflight.workspace, directory, label, signal)),
+          };
+    workspaceId = space.workspaceId;
+    tabId = space.tabId;
+    paneId = space.paneId;
     await waitForShell(state.deps, paneId, signal);
     ompMayHaveStarted = true;
     await startOmpAgent(state.deps, item.name, paneId, directory, item.role, signal);
@@ -324,7 +408,7 @@ async function launchWorker(
       name: item.name,
       role: item.role,
       status: agent.status === "blocked" ? "blocked" : "working",
-      workspace_id: preflight.workspace,
+      workspace_id: workspaceId,
       tab_id: tabId,
       pane_id: paneId,
       ...(preflight.scope === "project"
@@ -346,28 +430,32 @@ async function launchWorker(
     adoptWorker(state, record, agent.status);
     return publicRecord(record);
   } catch (error) {
-    const message = errorMessage(error);
+    let failure = errorMessage(error);
+    let retain = ompMayHaveStarted;
     if (!ompMayHaveStarted) {
-      if (tabId) await closeTabBestEffort(state.deps, tabId, signal);
-      if (lease) await returnLeaseBestEffort(state.deps, lease, signal);
-      else if (directory) {
-        try {
-          await rm(directory, { recursive: true });
-        } catch (cleanupError) {
-          state.deps.logger.warn?.("Visible worker cleanup failed", {
-            directory,
-            error: errorMessage(cleanupError),
-          });
-        }
+      try {
+        if (workspaceId && tabId)
+          await closeWorkerSpace(
+            state.deps,
+            { scope: preflight.scope, workspace_id: workspaceId, tab_id: tabId },
+            signal,
+          );
+        // Never return a lease while its Herdr shell might still be using the checkout.
+        if (lease) await returnLease(state.deps, lease, signal);
+        else if (directory) await rm(directory, { recursive: true });
+      } catch (cleanupError) {
+        retain = true;
+        failure += `; cleanup failed: ${errorMessage(cleanupError)}`;
       }
-    } else if (directory && tabId && paneId) {
+    }
+    if (retain && directory && workspaceId && tabId && paneId) {
       const record: WorkerRecord = {
         scope: preflight.scope,
         kind: item.kind,
         name: item.name,
         role: item.role,
         status: "failed",
-        workspace_id: preflight.workspace,
+        workspace_id: workspaceId,
         tab_id: tabId,
         pane_id: paneId,
         ...(preflight.scope === "project"
@@ -384,10 +472,11 @@ async function launchWorker(
             }
           : { working_directory: directory }),
         report_path: reportPath,
-        error: message,
+        error: failure,
         generation: 0,
       };
       state.records.set(item.name, record);
+      persist(state, record);
       return publicRecord(record);
     }
     return {
@@ -403,7 +492,7 @@ async function launchWorker(
           ? { working_directory: directory }
           : { worktree: directory, lease_id: lease?.leaseId }
         : {}),
-      ...(tabId ? { workspace_id: preflight.workspace, tab_id: tabId } : {}),
+      ...(tabId ? { workspace_id: workspaceId, tab_id: tabId } : {}),
       ...(paneId ? { pane_id: paneId } : {}),
       ...(item.pushTo ? { push_to: item.pushTo } : {}),
       ...(reportPath
@@ -412,7 +501,7 @@ async function launchWorker(
             ...(preflight.scope === "project" ? { local_changes: preflight.localChanges } : {}),
           }
         : {}),
-      error: message,
+      error: failure,
     };
   }
 }
@@ -427,7 +516,7 @@ const taskTool: CustomToolFactory = (pi) => {
     loadMode: "essential",
     approval: "exec",
     description:
-      "Launch project-scoped implementation or scout OMP workers, or project-independent scouts, in visible Herdr tabs. Project workers use isolated Treehouse worktrees; independent scouts use unique neutral working directories and public web research by default. One orchestrator_task call has one scope. Each assignment may select an OMP model role: smol for bounded research or mechanical work, slow for deep diagnosis or review, plan for architecture/schema/migration planning, designer for UI/UX, or vision for image inspection; omit role for normal work. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list or message agents.",
+      "Launch project-scoped implementation or scout OMP workers, or project-independent scouts, in visible Herdr spaces. Each project worker gets its own Treehouse worktree space nested under the project's Herdr space; independent scouts run as tabs in a shared research space, using unique neutral working directories and public web research by default. One orchestrator_task call has one scope. Each assignment may select an OMP model role: smol for bounded research or mechanical work, slow for deep diagnosis or review, plan for architecture/schema/migration planning, designer for UI/UX, or vision for image inspection; omit role for normal work. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list, message, or close agents.",
     parameters: z.union([
       z
         .object({
@@ -483,9 +572,7 @@ const taskTool: CustomToolFactory = (pi) => {
     ]),
     execute: async (_id, params, _onUpdate, _ctx, signal) =>
       runTask(state, pi.cwd, params as TaskParams, signal),
-    onSession: (event) => {
-      if (event.reason === "switch" || event.reason === "shutdown") disposeWorkers(state);
-    },
+    onSession: (event) => handleSession(state, event.reason),
   };
 };
 

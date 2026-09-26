@@ -25,12 +25,14 @@ export type TaskItem = {
 export type ProjectTaskParams = { project: string; context: string; tasks: TaskItem[] };
 export type IndependentTaskParams = { scope: "independent"; context: string; tasks: TaskItem[] };
 export type TaskParams = ProjectTaskParams | IndependentTaskParams;
-export type WorkersParams = { op: "list" } | { op: "send"; names: string[]; message: string };
+export type WorkersParams =
+  | { op: "list" }
+  | { op: "send"; names: string[]; message: string }
+  | { op: "close"; names: string[]; discard?: boolean };
 export type ProjectPreflight = {
   scope: "project";
   project: string;
   projectPath: string;
-  workspace: string;
   head: string;
   branch?: string;
   localChanges: string;
@@ -110,12 +112,17 @@ export function parseJson(value: string, command: string): unknown {
   }
 }
 
-export function stringAt(value: unknown, path: string[]): string | undefined {
+export function valueAt(value: unknown, path: string[]): unknown {
   let current = value;
   for (const key of path) {
     if (!current || typeof current !== "object" || Array.isArray(current) || !(key in current))
       return undefined;
     current = current[key as keyof typeof current];
   }
+  return current;
+}
+
+export function stringAt(value: unknown, path: string[]): string | undefined {
+  const current = valueAt(value, path);
   return typeof current === "string" ? current : undefined;
 }

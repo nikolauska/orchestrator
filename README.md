@@ -2,18 +2,18 @@
 
 Orchestrator is a root [Oh My Pi](https://github.com/can1357/oh-my-pi) workspace for safely coordinating work across local Git projects and project-independent research.
 
-It exists so parallel OMP work stays visible and recoverable: each worker runs in a visible [Herdr](https://herdr.dev) tab, project work uses an isolated Treehouse worktree, research produces a durable report, and blocked or failed work is retained rather than silently discarded.
+It exists so parallel OMP work stays visible and recoverable: each project gets its own [Herdr](https://herdr.dev) space with every active worker's isolated Treehouse worktree nested under it, independent research runs in a shared research space, research produces a durable report, worker state survives an OMP restart, and blocked or failed work is retained rather than silently discarded.
 
 ## Why use it
 
 - **One clear scope per request.** Work targets one registered project or independent research, never an accidental mix of both.
 - **Safe project changes.** Implementation workers commit and, by default, fast-forward the registered project's current branch only after successful completion.
-- **Research that survives the session.** Scouts write durable reports that remain available after their disposable workspaces close.
-- **Evidence retained for recovery.** Dirty checkouts, delivery conflicts, failed launches, and uncertain cleanup keep their worker tab and working directory for inspection.
+- **Research that survives the session.** Scouts write durable reports that remain available after their disposable worktree spaces or research tabs close.
+- **Evidence retained for recovery.** Dirty checkouts, delivery conflicts, failed launches, and uncertain cleanup keep their worker space and working directory for inspection.
 
 ## Requirements
 
-- `omp` and `herdr` on `PATH`
+- `omp` and `herdr` with `worktree open` support on `PATH` (verified with Herdr 0.9.1)
 - `treehouse` and `git` on `PATH` for registered-project work
 - Herdr's OMP integration installed before starting the root session:
 
@@ -40,6 +40,8 @@ herdr integration install omp
 
    > Show the active workers.
 
+   > Close the `fix-login` worker.
+
    > Find the report from the checkout accessibility research.
 
 Orchestrator chooses the appropriate worker and scope from your request. Independent research runs outside registered projects in a separate disposable directory; authenticated external access requires explicit instructions.
@@ -48,7 +50,9 @@ Orchestrator chooses the appropriate worker and scope from your request. Indepen
 
 Project implementation workers commit before completion. Successful work fast-forwards the registered project's current branch by default; a task may instead deliver to a named remote branch.
 
-Orchestrator does not discard uncertain work. A dirty checkout, conflict, failed launch, blocked worker, uncommitted implementation change, or unresolved scout-report cleanup retains the relevant tab and working location for recovery.
+Orchestrator does not discard uncertain work. A dirty checkout, conflict, failed launch, blocked worker, uncommitted implementation change, or unresolved scout-report cleanup retains the relevant worker space and working location for recovery. Closing a worker that still has undelivered work is refused unless you explicitly ask to discard it.
+
+Worker state lives in `.omp/orchestrator.db`, so workers survive an OMP restart: the next session reconnects to running workers and finishes delivery for any that completed meanwhile.
 
 ## Development
 
