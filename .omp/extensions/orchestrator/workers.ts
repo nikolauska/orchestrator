@@ -12,13 +12,8 @@ import {
   rebaseOnto,
   statusAt,
 } from "../../runtime/git";
-import {
-  closeWorkerSpace,
-  getAgent,
-  promptAgent,
-  readAgent,
-  waitForAgent,
-} from "../../runtime/herdr";
+import { closeWorkerSpace, getAgent, promptAgent, waitForAgent } from "../../runtime/herdr";
+import { lastResponse } from "../../runtime/session";
 import { WorkerStore } from "../../runtime/store";
 import { returnLease } from "../../runtime/treehouse";
 import {
@@ -382,7 +377,7 @@ function watchWorker(state: WorkerState, record: WorkerRecord): void {
 async function settleWorker(state: WorkerState, record: WorkerRecord): Promise<void> {
   const generation = ++record.generation;
   try {
-    const output = await readAgent(state.deps, record.pane_id);
+    const output = await workerResponse(state, record);
     if (record.generation !== generation || !isCurrent(state, record)) return;
     let outcome: Record<string, unknown>;
     if (record.kind === "scout") {
@@ -402,6 +397,20 @@ async function settleWorker(state: WorkerState, record: WorkerRecord): Promise<v
     record.error = errorMessage(error);
     persist(state, record);
     notify(state, terminal(record, "failed", "", record.error));
+  }
+}
+
+// The response is informational; delivery must not depend on being able to read it.
+async function workerResponse(state: WorkerState, record: WorkerRecord): Promise<string> {
+  try {
+    const { sessionPath } = await getAgent(state.deps, record.pane_id);
+    if (!sessionPath) return "Worker response unavailable: Herdr reported no session path";
+    return (
+      (await lastResponse(sessionPath)) ??
+      `Worker response unavailable: no assistant response in ${sessionPath}`
+    );
+  } catch (error) {
+    return `Worker response unavailable: ${errorMessage(error)}`;
   }
 }
 

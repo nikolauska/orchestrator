@@ -369,6 +369,56 @@ describe("delivery", () => {
     expect(messages[0]!.options).toEqual({ triggerTurn: true, deliverAs: "nextTurn" });
   });
 
+  test("reports only the worker's final assistant response", async () => {
+    const { fake, messages } = await launchedPair();
+    fake.sessionEntries.set("pane:alpha", [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "Do A" }] } },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Plan the change" },
+            { type: "toolCall", name: "edit", arguments: {} },
+          ],
+        },
+      },
+      {
+        type: "message",
+        message: { role: "assistant", content: [{ type: "text", text: "Early" }] },
+      },
+      { type: "message", message: { role: "toolResult", content: [{ type: "text", text: "ok" }] } },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Summarize" },
+            { type: "text", text: "Changed A." },
+            { type: "text", text: "Tests pass." },
+          ],
+        },
+      },
+      { type: "custom", data: { text: "status bar" } },
+    ]);
+    fake.settle("alpha");
+    await eventually(() => expect(messages.length).toBe(1));
+    const outcome = JSON.parse(messages[0]!.message.slice("Visible worker result:\n".length));
+    expect(outcome).toMatchObject({ status: "merged", output: "Changed A.\n\nTests pass." });
+  });
+
+  test("delivers with an explicit unavailable response when Herdr has no session", async () => {
+    const { fake, messages } = await launchedPair();
+    fake.sessionless.add("pane:alpha");
+    fake.settle("alpha");
+    await eventually(() => expect(messages.length).toBe(1));
+    const outcome = JSON.parse(messages[0]!.message.slice("Visible worker result:\n".length));
+    expect(outcome).toMatchObject({
+      status: "merged",
+      output: "Worker response unavailable: Herdr reported no session path",
+    });
+  });
+
   test("pushes without force or changing the registered checkout", async () => {
     const { root, project } = await fixtureRoot();
     const fake = new FakeExec(project);

@@ -1,9 +1,9 @@
 import { expect } from "bun:test";
 import { zod } from "@oh-my-pi/pi-coding-agent";
 import type { CustomToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import orchestratorExtension from "../.omp/extensions/orchestrator";
 import projectsTool from "../.omp/extensions/orchestrator/projects";
 import taskTool from "../.omp/extensions/orchestrator/orchestrator_task";
@@ -72,6 +72,8 @@ export class FakeExec {
   readonly dirtyWorkers = new Set<string>();
   readonly ancestors = new Set<string>();
   readonly outputs = new Map<string, string>();
+  readonly sessionEntries = new Map<string, unknown[]>();
+  readonly sessionless = new Set<string>();
   projectHead = "base";
   projectBranch = "main";
   projectDirty = false;
@@ -139,14 +141,21 @@ export class FakeExec {
       return this.#ok(
         JSON.stringify({
           result: {
-            agent: { agent: this.agentIdentity, agent_status: this.status.get(pane) ?? "working" },
+            agent: {
+              agent: this.agentIdentity,
+              agent_status: this.status.get(pane) ?? "working",
+              agent_session: this.sessionless.has(pane)
+                ? null
+                : {
+                    agent: "omp",
+                    kind: "path",
+                    source: "herdr:omp",
+                    value: await this.#session(pane),
+                  },
+            },
           },
         }),
       );
-    }
-    if (command === "herdr" && args.includes("agent") && args.includes("read")) {
-      const pane = args[args.indexOf("read") + 1];
-      return this.#ok(this.outputs.get(pane) ?? `output ${pane}`);
     }
     if (command === "herdr" && args.includes("agent") && args.includes("wait")) {
       const pane = args[args.indexOf("wait") + 1];
@@ -169,6 +178,23 @@ export class FakeExec {
     if (!waiter) throw new Error(`No waiter for ${name}`);
     this.waits.delete(pane);
     waiter.resolve();
+  }
+
+  async #session(pane: string): Promise<string> {
+    const path = join(dirname(this.project), "sessions", `${pane.replace(":", "-")}.jsonl`);
+    const entries = this.sessionEntries.get(pane) ?? [
+      { type: "message", message: { role: "user", content: [{ type: "text", text: "task" }] } },
+      {
+        type: "message",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: this.outputs.get(pane) ?? `output ${pane}` }],
+        },
+      },
+    ];
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
+    return path;
   }
 
   #git(args: string[], cwd?: string): ExecResult {

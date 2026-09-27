@@ -8,7 +8,7 @@ import {
   type WorkerRecord,
 } from "./shared";
 
-export type HerdrAgent = { identity: string; status: string };
+export type HerdrAgent = { identity: string; status: string; sessionPath?: string };
 export type HerdrTab = { tabId: string; paneId: string };
 export type HerdrSpace = HerdrTab & { workspaceId: string };
 export type HerdrWorkspace = {
@@ -35,9 +35,11 @@ export async function getAgent(
     await execCommand(deps, "herdr", ["agent", "get", pane], { signal }),
     "herdr agent get",
   );
+  const session = valueAt(value, ["result", "agent", "agent_session"]);
   return {
     identity: stringAt(value, ["result", "agent", "agent"]) ?? "",
     status: stringAt(value, ["result", "agent", "agent_status"]) ?? "",
+    sessionPath: stringAt(session, ["kind"]) === "path" ? stringAt(session, ["value"]) : undefined,
   };
 }
 
@@ -102,15 +104,6 @@ export function waitForAgent(
     deps,
     "herdr",
     ["agent", "wait", pane, "--until", "idle", "--until", "done", "--until", "blocked"],
-    { signal },
-  );
-}
-
-export function readAgent(deps: RuntimeDeps, pane: string, signal?: AbortSignal): Promise<string> {
-  return execCommand(
-    deps,
-    "herdr",
-    ["agent", "read", pane, "--source", "recent-unwrapped", "--lines", "200", "--format", "text"],
     { signal },
   );
 }
