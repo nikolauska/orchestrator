@@ -2,14 +2,13 @@ import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import {
-  IMPLEMENTATION_PROMPT_SUFFIX,
   LEASE_ID,
   NAME,
   errorMessage,
+  execCommand,
   text,
   type IndependentTaskParams,
   type Preflight,
-  type ProjectPreflight,
   type ProjectTaskParams,
   type TaskItem,
   type TaskParams,
@@ -22,6 +21,7 @@ import {
   checkBranch,
   currentBranch,
   head,
+  originLag,
   resetHard,
   status,
   topLevel,
@@ -30,17 +30,14 @@ import {
 import {
   closeWorkerSpace,
   createTab,
-  createWorkspace,
   ensureIntegration,
   getAgent,
-  listWorkspaces,
-  openWorktree,
   promptAgent,
-  renameWorkspace,
   startOmpAgent,
   waitForShell,
   type HerdrSpace,
 } from "../../runtime/herdr";
+import { projectSpace, researchSpace, workerLabel } from "../../runtime/spaces";
 import {
   acquireLease,
   returnLease,
@@ -53,12 +50,11 @@ import {
   hasWorker,
   persist,
   publicRecord,
+  requireOwnership,
   resumeWorkers,
   stateFor,
   type WorkerState,
 } from "./workers";
-
-const RESEARCH_SPACE = "research";
 
 export async function runTask(
   state: WorkerState,
@@ -72,17 +68,20 @@ export async function runTask(
     // retain this guard for direct callers and semantic invariants not covered by the schema.
     validateTask(params);
     if (!("scope" in params)) {
-      // OMP's strict tool schema transport materializes omitted optional strings as ""; keep omission as default behavior.
+      // OMP's strict tool schema transport materializes omitted optional fields as "" or false; keep omission as default behavior.
       params = {
         ...params,
-        tasks: params.tasks.map(({ pushTo, role, startFrom, ...item }) => ({
+        tasks: params.tasks.map(({ pushTo, role, startFrom, hold, pr, ...item }) => ({
           ...item,
           ...(pushTo ? { pushTo } : {}),
           ...(role ? { role } : {}),
           ...(startFrom ? { startFrom } : {}),
+          ...(hold ? { hold } : {}),
+          ...(pr ? { pr } : {}),
         })),
       };
     }
+    requireOwnership(state);
     await resumeWorkers(state);
     const active = params.tasks.find((item) => hasWorker(state, item.name));
     if (active) throw new Error(`Worker name already retained: ${active.name}`);
@@ -147,6 +146,13 @@ function validateTask(params: TaskParams): void {
       (typeof item.startFrom !== "string" || !item.startFrom.trim())
     )
       throw new Error(`startFrom for ${item.name} must be non-empty`);
+    for (const flag of ["hold", "pr"] as const) {
+      if (item[flag] !== undefined && typeof item[flag] !== "boolean")
+        throw new Error(`${flag} for ${item.name} must be a boolean`);
+      if (item[flag] && item.kind !== "implementation")
+        throw new Error(`Only implementation tasks can set ${flag}: ${item.name}`);
+    }
+    if (item.pr && !item.pushTo) throw new Error(`pr for ${item.name} requires pushTo`);
   }
 }
 
@@ -236,6 +242,21 @@ async function preflightTask(
         `Local delivery for ${mismatched.name} requires ${mismatched.startFrom} to be checked out`,
       );
   }
+  // Workers start from local refs; flag a start that its remote has already moved past.
+  const lags = new Map<string, Promise<string | undefined>>();
+  const originWarnings: Record<string, string> = {};
+  await Promise.all(
+    params.tasks.map(async (item) => {
+      const ref = item.startFrom ?? "HEAD";
+      const startHead = starts[item.name] ?? initialHead;
+      const key = `${ref}\0${startHead}`;
+      if (!lags.has(key)) lags.set(key, originLag(state.deps, canonical, ref, startHead, signal));
+      const warning = await lags.get(key);
+      if (warning) originWarnings[item.name] = warning;
+    }),
+  );
+  if (params.tasks.some((item) => item.pr))
+    await execCommand(state.deps, "gh", ["--version"], { signal });
   return {
     scope: "project",
     project: params.project,
@@ -244,6 +265,7 @@ async function preflightTask(
     branch,
     localChanges,
     starts,
+    originWarnings,
   };
 }
 
@@ -266,57 +288,29 @@ async function requireHerdr(
   ]);
 }
 
-/** Runs Herdr space lookups and creation one at a time so parallel launches never create duplicate spaces. */
-function serializeSpaces<T>(state: WorkerState, work: () => Promise<T>): Promise<T> {
-  const result = state.spaceQueue.then(work);
-  state.spaceQueue = result.then(
-    () => undefined,
-    () => undefined,
-  );
-  return result;
-}
-
-function researchSpace(state: WorkerState, signal?: AbortSignal): Promise<string> {
-  return serializeSpaces(state, async () => {
-    const existing = (await listWorkspaces(state.deps, signal)).find(
-      (workspace) => workspace.label === RESEARCH_SPACE,
-    );
-    if (existing) return existing.workspaceId;
-    await mkdir(state.neutralRoot, { recursive: true });
-    return (await createWorkspace(state.deps, state.neutralRoot, RESEARCH_SPACE, signal))
-      .workspaceId;
-  });
-}
-
-function projectSpace(
-  state: WorkerState,
-  preflight: ProjectPreflight,
-  checkout: string,
-  label: string,
-  signal?: AbortSignal,
-): Promise<HerdrSpace> {
-  return serializeSpaces(state, async () => {
-    const before = new Set(
-      (await listWorkspaces(state.deps, signal)).map((workspace) => workspace.workspaceId),
-    );
-    const space = await openWorktree(state.deps, preflight.projectPath, checkout, signal);
-    try {
-      await renameWorkspace(state.deps, space.workspaceId, label, signal);
-      const parent = (await listWorkspaces(state.deps, signal)).find(
-        (workspace) => workspace.repoRoot === preflight.projectPath && !workspace.linked,
-      );
-      // Herdr names a parent it creates after the checkout folder; a space the user already had keeps its label.
-      if (parent && !before.has(parent.workspaceId))
-        await renameWorkspace(state.deps, parent.workspaceId, preflight.project, signal);
-    } catch (error) {
-      // The name is cosmetic; the worker space is already open and must still be tracked.
-      state.deps.logger.warn?.("Project space rename failed", {
-        project: preflight.project,
-        error: errorMessage(error),
-      });
-    }
-    return space;
-  });
+/**
+ * Builds the assignment each worker receives. Workers run unattended, so every prompt states the
+ * observable finish line and what is safe to do without asking, instead of a step-by-step recipe.
+ */
+function workerPrompt(
+  preflight: Preflight,
+  context: string,
+  item: TaskItem,
+  directory: string,
+  reportPath: string | undefined,
+): string {
+  const lead = context ? `${context}\n\n` : "";
+  if (item.kind === "implementation")
+    return `${lead}You are an unattended worker in an isolated worktree created for this assignment. You are done when the change works: implement it, run or exercise the changed behavior and the relevant local checks, fix failures your change causes, and commit every assignment change. Keep going until then rather than stopping for review; the worktree and its local checks are disposable, so run, fix, and rerun them without asking. Ask only when a missing decision would materially change the outcome, and mention optional extras as follow-ups instead of adding them. Work directly without delegating to subagents.\nUse the ponytail skill for this assignment.\n\n${item.task}`;
+  const finish = `You are done when the authoritative, non-empty standalone Markdown report is at ${reportPath} and your final message states the concise conclusion. Record whatever helps the reader (investigation, findings, evidence, recommendations, unresolved decisions) without fixed headings; unresolved decisions go in the report and do not block completion. Work directly without delegating to subagents.`;
+  if (preflight.scope === "project") {
+    const revision = preflight.starts[item.name] ?? preflight.head;
+    const excluded = preflight.localChanges
+      ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}`
+      : " The registered checkout has no local changes to exclude.";
+    return `${lead}You are a scout researching the exact committed revision ${revision} of this project. The registered checkout's local changes are excluded.${excluded}\nThis worktree is disposable: scratch edits, experiments, and commits are fine and are never delivered.\n\n${finish}\n\n${item.task}`;
+  }
+  return `${lead}You are a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded; global and user OMP instructions still apply. Scratch files in ${directory} are disposable and never delivered; do not create commits or implement changes for delivery. Public web search and public URL reads are enabled. Use authenticated external systems only when this assignment explicitly asks for them.\n\n${finish} Include source URLs and the research date in the report.\n\n${item.task}`;
 }
 
 async function launchWorker(
@@ -334,6 +328,9 @@ async function launchWorker(
   let tabId: string | undefined;
   let paneId: string | undefined;
   let ompMayHaveStarted = false;
+  let prompt: string | undefined;
+  const originWarning =
+    preflight.scope === "project" ? preflight.originWarnings[item.name] : undefined;
   const reportPath =
     item.kind === "scout"
       ? join(
@@ -378,11 +375,17 @@ async function launchWorker(
     }
     if (!directory) throw new Error("Worker directory was not allocated");
     if (reportPath) await mkdir(dirname(reportPath), { recursive: true });
-    // The kind prefix tells implementation work from research at a glance in Herdr's sidebar.
-    const label = `${item.kind === "scout" ? "scout" : "impl"}·${item.name}`;
+    const label = workerLabel(item.kind, item.name);
     const space: HerdrSpace =
       preflight.scope === "project"
-        ? await projectSpace(state, preflight, directory, label, signal)
+        ? await projectSpace(
+            state,
+            preflight.project,
+            preflight.projectPath,
+            directory,
+            label,
+            signal,
+          )
         : {
             workspaceId: preflight.workspace,
             ...(await createTab(state.deps, preflight.workspace, directory, label, signal)),
@@ -393,43 +396,18 @@ async function launchWorker(
     await waitForShell(state.deps, paneId, signal);
     ompMayHaveStarted = true;
     await startOmpAgent(state.deps, item.name, paneId, directory, item.role, signal);
-    const prompt =
-      item.kind === "implementation"
-        ? `${context}\n\n${IMPLEMENTATION_PROMPT_SUFFIX}\nUse the ponytail skill for this assignment.\n\n${item.task}`
-        : preflight.scope === "project"
-          ? `${context}\n\nResearch only the exact committed revision ${preflight.starts[item.name] ?? preflight.head}; the registered checkout's local changes are excluded and disclosed in the report.${preflight.localChanges ? ` Disclose these excluded local changes in the report:\n${preflight.localChanges}` : " The registered checkout has no local changes to exclude."}\nYou may make scratch edits or commits only in this disposable worktree. They will never be delivered. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents.\n\n${item.task}`
-          : `${context}\n\nThis is a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded. Global and user OMP instructions still apply. Scratch files in ${directory} are disposable and are never delivered; do not create commits. Public web search and reads of public URLs are enabled by default. Access authenticated external systems only when this assignment explicitly instructs it. Write the authoritative, non-empty standalone Markdown report to ${reportPath}. Include source URLs and the research date. Cover the investigation, findings, evidence, recommendations, and unresolved decisions as useful without fixed headings. Return a concise terminal conclusion. Unresolved decisions do not block completion. Complete this assignment directly; do not delegate to subagents. Do not implement changes for delivery.\n\n${item.task}`;
+    prompt = workerPrompt(preflight, context, item, directory, reportPath);
     await promptAgent(state.deps, paneId, prompt, signal);
     const agent = await getAgent(state.deps, paneId, signal);
     if (agent.identity !== "omp")
       throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
-    const record: WorkerRecord = {
-      scope: preflight.scope,
-      kind: item.kind,
-      name: item.name,
-      role: item.role,
-      status: agent.status === "blocked" ? "blocked" : "working",
-      workspace_id: workspaceId,
-      tab_id: tabId,
-      pane_id: paneId,
-      ...(preflight.scope === "project"
-        ? {
-            project: preflight.project,
-            projectPath: preflight.projectPath,
-            worktree: directory,
-            lease_id: lease!.leaseId,
-            lease_holder: lease!.leaseHolder,
-            delivery_base: preflight.starts[item.name] ?? preflight.head,
-            branch: preflight.branch,
-            push_to: item.pushTo,
-            local_changes: item.kind === "scout" ? preflight.localChanges : undefined,
-          }
-        : { working_directory: directory }),
-      report_path: reportPath,
-      generation: 0,
-    };
+    const record = workerRecord(
+      agent.status === "blocked" ? "blocked" : "working",
+      { workspaceId, tabId, paneId },
+      directory,
+    );
     adoptWorker(state, record, agent.status);
-    return publicRecord(record);
+    return { ...publicRecord(record), ...(originWarning ? { origin_warning: originWarning } : {}) };
   } catch (error) {
     let failure = errorMessage(error);
     let retain = ompMayHaveStarted;
@@ -450,35 +428,13 @@ async function launchWorker(
       }
     }
     if (retain && directory && workspaceId && tabId && paneId) {
-      const record: WorkerRecord = {
-        scope: preflight.scope,
-        kind: item.kind,
-        name: item.name,
-        role: item.role,
-        status: "failed",
-        workspace_id: workspaceId,
-        tab_id: tabId,
-        pane_id: paneId,
-        ...(preflight.scope === "project"
-          ? {
-              project: preflight.project,
-              projectPath: preflight.projectPath,
-              worktree: directory,
-              lease_id: lease!.leaseId,
-              lease_holder: lease!.leaseHolder,
-              delivery_base: preflight.starts[item.name] ?? preflight.head,
-              branch: preflight.branch,
-              push_to: item.pushTo,
-              local_changes: item.kind === "scout" ? preflight.localChanges : undefined,
-            }
-          : { working_directory: directory }),
-        report_path: reportPath,
-        error: failure,
-        generation: 0,
-      };
+      const record = workerRecord("failed", { workspaceId, tabId, paneId }, directory, failure);
       state.records.set(item.name, record);
       persist(state, record);
-      return publicRecord(record);
+      return {
+        ...publicRecord(record),
+        ...(originWarning ? { origin_warning: originWarning } : {}),
+      };
     }
     return {
       kind: item.kind,
@@ -503,6 +459,46 @@ async function launchWorker(
           }
         : {}),
       error: failure,
+      ...(originWarning ? { origin_warning: originWarning } : {}),
+    };
+  }
+
+  function workerRecord(
+    status: WorkerRecord["status"],
+    space: HerdrSpace,
+    directory: string,
+    error?: string,
+  ): WorkerRecord {
+    return {
+      scope: preflight.scope,
+      kind: item.kind,
+      name: item.name,
+      role: item.role,
+      status,
+      workspace_id: space.workspaceId,
+      tab_id: space.tabId,
+      pane_id: space.paneId,
+      ...(preflight.scope === "project"
+        ? {
+            project: preflight.project,
+            projectPath: preflight.projectPath,
+            worktree: directory,
+            lease_id: lease!.leaseId,
+            lease_holder: lease!.leaseHolder,
+            delivery_base: preflight.starts[item.name] ?? preflight.head,
+            branch: preflight.branch,
+            start_from: item.startFrom,
+            push_to: item.pushTo,
+            hold: item.hold,
+            pr: item.pr,
+            local_changes: item.kind === "scout" ? preflight.localChanges : undefined,
+          }
+        : { working_directory: directory }),
+      report_path: reportPath,
+      // Stored so a dead or wedged worker can be relaunched with its original assignment.
+      prompt,
+      error,
+      generation: 0,
     };
   }
 }
@@ -517,7 +513,7 @@ const taskTool: ToolFactory = (pi) => {
     loadMode: "essential",
     approval: "exec",
     description:
-      "Launch project-scoped implementation or scout OMP workers, or project-independent scouts, in visible Herdr spaces. Each project worker gets its own Treehouse worktree space nested under the project's Herdr space; independent scouts run as tabs in a shared research space, using unique neutral working directories and public web research by default. One orchestrator_task call has one scope. Each assignment may select an OMP model role: smol for bounded research or mechanical work, slow for deep diagnosis or review, plan for architecture/schema/migration planning, designer for UI/UX, or vision for image inspection; omit role for normal work. Scouts produce durable reports and cannot deliver changes. Returns after launch; completion wakes this root session. Use projects to list targets and workers, not hub, to list, message, or close agents.",
+      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role; startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; pr opens a draft pull request after pushTo; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
     parameters: z.union([
       z
         .object({
@@ -534,6 +530,8 @@ const taskTool: ToolFactory = (pi) => {
                     role: z.string().optional(),
                     pushTo: z.string().optional(),
                     startFrom: z.string().optional(),
+                    hold: z.boolean().optional(),
+                    pr: z.boolean().optional(),
                   })
                   .strict(),
                 z

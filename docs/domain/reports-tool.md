@@ -8,4 +8,4 @@ Reports from registered-project and independent research are listed together, ne
 
 ## Reading reports
 
-A listed report can be read in full using its returned path. Reports remain available after their scout completes.
+A listed report can be read in full using its listed name. When two projects hold reports with the same name, prefix the name with its project or `_independent`. Reports remain available after their scout completes.

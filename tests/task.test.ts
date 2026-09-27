@@ -404,3 +404,61 @@ describe("project-independent scouts", () => {
     }
   });
 });
+
+describe("launch options", () => {
+  test("warns when a start is behind its remote without fetching", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    fake.upstreams.set("refs/heads/main", "origin refs/heads/main");
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    const launch = async (name: string) =>
+      (
+        (
+          await instance.runTask({
+            project: "fixture",
+            context: "",
+            tasks: [{ kind: "scout", name, task: "Investigate" }],
+          })
+        ).details as Array<Record<string, unknown>>
+      )[0]!.origin_warning;
+
+    fake.remoteHeads.set("refs/heads/main", "remote1");
+    fake.knownCommits.add("remote1");
+    expect(await launch("fetched")).toBe(
+      "main is 3 commit(s) behind origin/main; workers start from local base",
+    );
+    fake.knownCommits.clear();
+    expect(await launch("unfetched")).toContain("never fetched");
+    fake.knownCommits.add("remote1");
+    fake.ancestors.add("remote1:base");
+    expect(await launch("ahead")).toBeUndefined();
+    fake.remoteHeads.set("refs/heads/main", "base");
+    expect(await launch("current")).toBeUndefined();
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.command === "git" && (call.args.includes("fetch") || call.args.includes("pull")),
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects hold and pr where they cannot apply", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    for (const [item, expected] of [
+      [{ kind: "scout" as const, name: "held", task: "work", hold: true }, "Only implementation"],
+      [
+        { kind: "implementation" as const, name: "local-pr", task: "work", pr: true },
+        "requires pushTo",
+      ],
+    ] as const) {
+      const result = await instance.runTask({ project: "fixture", context: "", tasks: [item] });
+      expect(result.isError).toBe(true);
+      expect(result.content[0]!.type === "text" && result.content[0]!.text).toContain(expected);
+    }
+    expect(fake.calls.some((call) => call.command === "treehouse")).toBe(false);
+  });
+});

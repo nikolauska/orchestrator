@@ -6,14 +6,14 @@ The Task tool starts visible OMP workers for one registered project or for resea
 
 Registered-project work supports two assignment types:
 
-- **Implementation** — makes an authorized change, verifies it, and commits it before completion.
+- **Implementation** — makes an authorized change, runs and checks it, fixes what it broke, and commits it before completion.
 - **Scout** — investigates, plans, audits, or diagnoses without delivering changes.
 
-A task may select an existing local branch as its starting point. This lets work and research use a branch other than the registered project's currently checked-out branch.
+A task may select an existing local branch as its starting point. This lets work and research use a branch other than the registered project's currently checked-out branch. When a worker's starting branch is behind its remote, the launch result says so; Orchestrator only compares and never fetches or changes the checkout.
 
 Workers run in visible Herdr spaces. Each project worker gets its own space, shown nested under the project's space. A project space that Orchestrator creates is named after the registered project; a space you already had for that repository keeps its name. Worker names show their kind, such as `impl·fix-login` or `scout·audit-auth`. A request can start multiple independent assignments together, with a maximum of 32 workers.
 
-Implementation work is delivered locally by default: a successful committed change advances the registered project's current branch. A task that starts from a selected branch can be delivered locally only when that branch is currently checked out; otherwise it can use a named remote delivery branch.
+Implementation work is delivered locally by default: a successful committed change advances the registered project's current branch. A task that starts from a selected branch can be delivered locally only when that branch is currently checked out; otherwise it can use a named remote delivery branch. A task that pushes to a remote branch can also open a draft pull request. A task can instead be held for review, stopping at ready until it is landed with the Workers tool.
 
 ## Project research
 
@@ -31,4 +31,4 @@ Independent scouts receive a separate disposable working directory, have no proj
 
 Each assignment has a descriptive worker name and a clear task. A request may choose an available OMP model role for an assignment; omitting it uses the default model.
 
-Workers do not delegate further work.
+Workers do not delegate further work. They run with fixed settings that keep them from stopping on interactive prompts meant for your own sessions; your own OMP configuration is not changed.

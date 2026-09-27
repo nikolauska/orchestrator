@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import {
   errorMessage,
   execCommand,
@@ -95,17 +96,41 @@ export async function promptAgent(
   }
 }
 
+/** Waits for any of `states`; the default returns when the agent stops working. */
 export function waitForAgent(
   deps: RuntimeDeps,
   pane: string,
+  signal?: AbortSignal,
+  states: readonly string[] = ["idle", "done", "blocked"],
+): Promise<string> {
+  return execCommand(
+    deps,
+    "herdr",
+    ["agent", "wait", pane, ...states.flatMap((state) => ["--until", state])],
+    { signal },
+  );
+}
+
+export function readAgent(
+  deps: RuntimeDeps,
+  pane: string,
+  lines: number,
   signal?: AbortSignal,
 ): Promise<string> {
   return execCommand(
     deps,
     "herdr",
-    ["agent", "wait", pane, "--until", "idle", "--until", "done", "--until", "blocked"],
+    ["agent", "read", pane, "--source", "recent", "--lines", String(lines)],
     { signal },
   );
+}
+
+export async function interruptAgent(
+  deps: RuntimeDeps,
+  pane: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await execCommand(deps, "herdr", ["agent", "send-keys", pane, "esc"], { signal });
 }
 
 export async function listWorkspaces(
@@ -253,6 +278,9 @@ export function waitForShell(
   );
 }
 
+// Unattended workers must never stop on an interactive prompt meant for the user's own sessions.
+export const WORKER_CONFIG = fileURLToPath(new URL("../worker-config.yml", import.meta.url));
+
 export function startOmpAgent(
   deps: RuntimeDeps,
   name: string,
@@ -275,6 +303,7 @@ export function startOmpAgent(
       "--",
       "--cwd",
       directory,
+      `--config=${WORKER_CONFIG}`,
       ...(role ? ["--model", `@${role}`] : []),
     ],
     { signal },

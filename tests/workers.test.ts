@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
+import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import {
   cleanup,
@@ -578,5 +579,297 @@ describe("durable state", () => {
     >;
     expect(result[0]).toMatchObject({ close: "closed", name: "alpha" });
     expect(fake.workspaces.map((item) => item.label).sort()).toEqual(["fixture", "impl·beta"]);
+  });
+});
+
+type Outcome = Record<string, unknown>;
+
+function parsed(
+  messages: Array<{ message: string }>,
+  heading = "Visible worker result",
+): Outcome[] {
+  return messages
+    .filter((item) => item.message.startsWith(`${heading}:\n`))
+    .map((item) => JSON.parse(item.message.slice(heading.length + 2)) as Outcome);
+}
+
+describe("supervision", () => {
+  test("shows a blocked worker's question and delivers after the user answers in its tab", async () => {
+    const { fake, messages } = await launchedPair();
+    fake.screens.set("pane:alpha", "Which database should I use?");
+    fake.settle("alpha", "blocked");
+    await eventually(() =>
+      expect(parsed(messages)[0]).toMatchObject({
+        name: "alpha",
+        status: "blocked",
+        output: "Which database should I use?",
+      }),
+    );
+    // The user answers directly in the worker's tab; no send goes through the root.
+    await eventually(() => expect(fake.waits.has("pane:alpha")).toBe(true));
+    fake.settle("alpha", "working");
+    await eventually(() => expect(fake.waits.has("pane:alpha")).toBe(true));
+    fake.settle("alpha", "done");
+    await eventually(() =>
+      expect(parsed(messages).at(-1)).toMatchObject({ name: "alpha", status: "merged" }),
+    );
+    expect(fake.projectHead).toBe("head-alpha");
+  });
+
+  test("interrupt stops a turn without delivering, survives restart, and send resumes it", async () => {
+    const { root, fake, messages, instance } = await launchedPair();
+    const interrupted = (await instance.runWorkers({ op: "interrupt", names: ["alpha"] }))
+      .details as Outcome[];
+    expect(interrupted[0]).toMatchObject({
+      name: "alpha",
+      status: "interrupted",
+      interrupt: "sent",
+    });
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.command === "herdr" && call.args.includes("send-keys") && call.args.at(-1) === "esc",
+      ),
+    ).toBe(true);
+
+    instance.dispose();
+    const restartedMessages: Array<{ message: string; options: unknown }> = [];
+    const restarted = runtime(root, fake, restartedMessages);
+    const listed = (await restarted.runWorkers({ op: "list" })).details as Outcome[];
+    expect(listed.find((item) => item.name === "alpha")?.status).toBe("interrupted");
+    for (let turn = 0; turn < 20; turn++) await new Promise<void>(setImmediate);
+    // The idle agent after Escape must not be mistaken for a finished assignment.
+    expect(parsed(messages).concat(parsed(restartedMessages))).toEqual([]);
+    expect(fake.projectHead).toBe("base");
+
+    await restarted.runWorkers({ op: "send", names: ["alpha"], message: "Continue" });
+    fake.settle("alpha");
+    await eventually(() =>
+      expect(parsed(restartedMessages)[0]).toMatchObject({ name: "alpha", status: "merged" }),
+    );
+  });
+
+  test("notifies once when the screen stops changing and once when a turn runs long", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const instance = runtime(root, fake, messages);
+    await register(instance, project);
+    fake.screens.set("pane:slow", "Running bun test");
+    const notices = () => parsed(messages, "Visible worker notice");
+    // Each supervision check awaits fake commands, which settle within a few microtask turns.
+    const advance = async (seconds: number) => {
+      for (let elapsed = 0; elapsed < seconds; elapsed += 60) {
+        vi.advanceTimersByTime(60_000);
+        for (let turn = 0; turn < 20; turn++) await Promise.resolve();
+      }
+    };
+    vi.useFakeTimers();
+    try {
+      await instance.runTask({
+        project: "fixture",
+        context: "",
+        tasks: [{ kind: "implementation", name: "slow", task: "work" }],
+      });
+      await advance(240);
+      expect(notices()).toEqual([]);
+      await advance(120);
+      expect(notices().map((item) => item.notice)).toEqual(["no_progress"]);
+      expect(notices()[0]).toMatchObject({
+        name: "slow",
+        status: "working",
+        output: "Running bun test",
+      });
+      await advance(3600);
+      expect(notices().map((item) => item.notice)).toEqual(["no_progress", "long_turn"]);
+      await advance(1200);
+      expect(notices()).toHaveLength(2);
+      // Inspection only: the worker keeps running and still delivers normally.
+      fake.settle("slow");
+      // setImmediate stays real under Bun's fake timers, so `eventually` still lets file I/O finish.
+      await eventually(() => expect(parsed(messages)[0]).toMatchObject({ status: "merged" }));
+      await advance(1200);
+      expect(notices()).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a second session may only look until the supervising session dies", async () => {
+    const { root, fake, messages, instance } = await launchedPair();
+    fake.screens.set("pane:alpha", "Editing src/app.ts");
+    const otherMessages: Array<{ message: string; options: unknown }> = [];
+    const other = runtime(root, fake, otherMessages);
+
+    const listed = await other.runWorkers({ op: "list" });
+    expect(listed.content[0].text).toContain("read-only");
+    expect((listed.details as Outcome[]).map((item) => item.name)).toEqual(["alpha", "beta"]);
+    expect(
+      ((await other.runWorkers({ op: "read", names: ["alpha"] })).details as Outcome[])[0],
+    ).toMatchObject({ name: "alpha", screen: "Editing src/app.ts" });
+    const send = await other.runWorkers({ op: "send", names: ["alpha"], message: "stop" });
+    expect(send.isError).toBe(true);
+    expect(send.content[0].text).toContain("read-only");
+    const launch = await other.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "scout", name: "look", task: "work" }],
+    });
+    expect(launch.isError).toBe(true);
+    expect(
+      fake.calls.filter(
+        (call) =>
+          call.command === "herdr" &&
+          call.args[1] === "wait" &&
+          call.args[2] === "pane:alpha" &&
+          !call.args.includes("--timeout"),
+      ),
+    ).toHaveLength(1);
+
+    fake.settle("alpha");
+    await eventually(() => expect(parsed(messages)[0]).toMatchObject({ status: "merged" }));
+    expect(otherMessages).toEqual([]);
+
+    // Simulate the supervising OMP process crashing without releasing ownership.
+    const exited = Bun.spawn(["true"]);
+    await exited.exited;
+    const deadPid = exited.pid;
+    const db = new Database(join(root, ".omp", "orchestrator.db"), { strict: true });
+    db.query("UPDATE owner SET pid = $pid").run({ pid: deadPid });
+    db.close();
+    const reclaimed = await other.runWorkers({ op: "list" });
+    expect(reclaimed.content[0].text).not.toContain("read-only");
+    expect((reclaimed.details as Outcome[]).map((item) => item.name)).toEqual(["beta"]);
+    instance.dispose();
+    await eventually(() => expect(fake.waits.has("pane:beta")).toBe(true));
+    fake.settle("beta");
+    await eventually(() =>
+      expect(parsed(otherMessages)[0]).toMatchObject({ name: "beta", status: "merged" }),
+    );
+  });
+
+  test("relaunches a dead worker in its retained worktree with its original assignment", async () => {
+    const { root, fake, instance } = await launchedPair();
+    instance.dispose();
+    fake.goneAgents.add("pane:alpha");
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const restarted = runtime(root, fake, messages);
+    await restarted.runWorkers({ op: "list" });
+    fake.goneAgents.delete("pane:alpha");
+    expect(
+      (await restarted.runWorkers({ op: "relaunch", names: ["alpha"], note: " " })).isError,
+    ).toBe(true);
+
+    const before = fake.calls.length;
+    const relaunched = (
+      await restarted.runWorkers({ op: "relaunch", names: ["alpha"], note: "The tab crashed" })
+    ).details as Outcome[];
+    expect(relaunched[0]).toMatchObject({ name: "alpha", status: "working", relaunch: "started" });
+    const calls = fake.calls.slice(before);
+    const prompt = calls.find((call) => call.command === "herdr" && call.args.includes("prompt"));
+    expect(prompt?.args[3]).toStartWith("shared\n\n");
+    expect(prompt?.args[3]).toContain("\n\nA\n\nRecovery relaunch");
+    expect(prompt?.args[3]).toEndWith("Note from the orchestrator: The tab crashed");
+    // The retained checkout keeps its work: no reset and no new lease.
+    expect(calls.some((call) => call.command === "git" && call.args.includes("reset"))).toBe(false);
+    expect(calls.some((call) => call.command === "treehouse")).toBe(false);
+
+    fake.settle("alpha");
+    await eventually(() =>
+      expect(parsed(messages).at(-1)).toMatchObject({
+        name: "alpha",
+        status: "merged",
+      }),
+    );
+  });
+});
+
+describe("delivery options", () => {
+  test("holds an implementation for review and lands it on request", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const instance = runtime(root, fake, messages);
+    await register(instance, project);
+    await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "implementation", name: "held", task: "work", hold: true }],
+    });
+    const early = (await instance.runWorkers({ op: "land", names: ["held"] })).details as Outcome[];
+    expect(early[0]).toMatchObject({ land: "refused" });
+
+    fake.settle("held");
+    await eventually(() =>
+      expect(parsed(messages)[0]).toMatchObject({
+        status: "ready",
+        head: "head-held",
+        delivery_base: "base",
+      }),
+    );
+    expect(fake.projectHead).toBe("base");
+    expect(fake.workspaces.map((item) => item.label)).toContain("impl·held");
+
+    const landed = (await instance.runWorkers({ op: "land", names: ["held"] }))
+      .details as Outcome[];
+    expect(landed[0]).toMatchObject({ name: "held", status: "merged" });
+    expect(fake.projectHead).toBe("head-held");
+    expect(fake.workspaces.map((item) => item.label)).toEqual(["fixture"]);
+    expect(messages).toHaveLength(1);
+    expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
+  });
+
+  test("opens a draft pull request after pushing and still delivers when that fails", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const instance = runtime(root, fake, messages);
+    await register(instance, project);
+    fake.branchHeads.set("release", "release123");
+    await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [
+        {
+          kind: "implementation",
+          name: "opened",
+          task: "work",
+          pushTo: "feature/opened",
+          startFrom: "release",
+          pr: true,
+        },
+        { kind: "implementation", name: "refused", task: "work", pushTo: "feature/r", pr: true },
+      ],
+    });
+    fake.settle("opened");
+    await eventually(() =>
+      expect(parsed(messages)[0]).toMatchObject({
+        name: "opened",
+        status: "pushed",
+        pr_url: fake.prUrl,
+      }),
+    );
+    const create = fake.calls.find((call) => call.command === "gh" && call.args[0] === "pr");
+    expect(create?.args).toEqual([
+      "pr",
+      "create",
+      "--draft",
+      "--fill",
+      "--head",
+      "feature/opened",
+      "--base",
+      "release",
+    ]);
+
+    fake.prFails = true;
+    fake.settle("refused");
+    await eventually(() =>
+      expect(parsed(messages)[1]).toMatchObject({
+        name: "refused",
+        status: "pushed",
+        pr_error: expect.stringContaining("not authenticated"),
+      }),
+    );
+    expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
   });
 });

@@ -42,17 +42,23 @@ herdr integration install omp
 
    > Close the `fix-login` worker.
 
+   > What is `fix-login` doing right now?
+
+   > Fix the login timeout in `my-app`, but hold it so I can review before it lands.
+
    > Find the report from the checkout accessibility research.
 
 Orchestrator chooses the appropriate worker and scope from your request. Independent research runs outside registered projects in a separate disposable directory; authenticated external access requires explicit instructions.
 
 ## Delivery and recovery
 
-Project implementation workers commit before completion. Successful work fast-forwards the registered project's current branch by default; a task may instead deliver to a named remote branch.
+Project implementation workers commit before completion. Successful work fast-forwards the registered project's current branch by default. A task may instead push to a named remote branch, optionally opening a draft pull request (requires an authenticated `gh`), or be held for review until you ask Orchestrator to land it. A launch warns when a worker starts from a branch that is behind its remote.
 
 Orchestrator does not discard uncertain work. A dirty checkout, conflict, failed launch, blocked worker, uncommitted implementation change, or unresolved scout-report cleanup retains the relevant worker space and working location for recovery. Closing a worker that still has undelivered work is refused unless you explicitly ask to discard it.
 
-Worker state lives in `.omp/orchestrator.db`, so workers survive an OMP restart: the next session reconnects to running workers and finishes delivery for any that completed meanwhile.
+Worker state lives in `.omp/orchestrator.db`, so workers survive an OMP restart: the next session reconnects to running workers and finishes delivery for any that completed meanwhile. Only one OMP session supervises workers at a time; another session opened in this repository can list workers and read their screens, and takes over once the supervising session exits.
+
+Workers start with the settings overlay in [`.omp/worker-config.yml`](.omp/worker-config.yml), which keeps unattended workers off interactive prompts without changing your own OMP configuration. A blocked worker's question reaches the root session with its screen, and supervision continues if you answer it directly in the worker's tab.
 
 ## Development
 

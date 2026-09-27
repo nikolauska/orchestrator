@@ -1,0 +1,13 @@
+# OMP settings overlay passed with `--config` to every visible worker Orchestrator starts.
+# It never changes the user's own ~/.omp/agent/config.yml. Each key pins a setting whose
+# interactive value would park an unattended worker or change its model mid-assignment.
+plan:
+  # A session that opens in read-only plan mode cannot edit files and waits forever.
+  defaultOnStartup: false
+prewalk:
+  # Prewalk switches to the `smol` role after the first edit, overriding the assigned role.
+  enabled: false
+retry:
+  # `confirm` opens a dialog when a usage window runs low; `auto` continues through the
+  # configured fallback chain without a keystroke.
+  usageReservePolicy: auto

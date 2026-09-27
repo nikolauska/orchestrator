@@ -148,3 +148,77 @@ export async function abortRebaseBestEffort(
     });
   }
 }
+
+/**
+ * Describes how far `ref` (HEAD or a branch name) trails its upstream on the remote without
+ * fetching, so the registered checkout's refs stay untouched. Returns undefined when the ref has
+ * no upstream, such as a detached HEAD, or already contains the remote's commits.
+ */
+export async function originLag(
+  deps: RuntimeDeps,
+  directory: string,
+  ref: string,
+  head: string,
+  signal?: AbortSignal,
+): Promise<string | undefined> {
+  try {
+    const fullRef =
+      ref === "HEAD"
+        ? await at(deps, directory, ["rev-parse", "--symbolic-full-name", "HEAD"], signal)
+        : `refs/heads/${ref}`;
+    if (!fullRef.startsWith("refs/heads/")) return undefined;
+    const branch = fullRef.slice("refs/heads/".length);
+    const [remote, remoteRef] = (
+      await at(
+        deps,
+        directory,
+        ["for-each-ref", "--format=%(upstream:remotename) %(upstream:remoteref)", fullRef],
+        signal,
+      )
+    ).split(" ");
+    if (!remote || !remoteRef) return undefined;
+    const remoteHead = (
+      await execCommand(deps, "git", ["-C", directory, "ls-remote", remote, remoteRef], {
+        signal,
+        timeout: 10_000,
+      })
+    ).split(/\s/, 1)[0];
+    if (!remoteHead || remoteHead === head) return undefined;
+    const upstream = `${remote}/${remoteRef.replace(/^refs\/heads\//, "")}`;
+    const known =
+      (
+        await deps.exec("git", ["-C", directory, "cat-file", "-e", `${remoteHead}^{commit}`], {
+          signal,
+        })
+      ).code === 0;
+    if (!known)
+      return `${branch} is behind ${upstream}: the remote has commits that were never fetched; workers start from local ${head}`;
+    if (await isAncestor(deps, directory, remoteHead, head, signal)) return undefined;
+    const behind = await at(
+      deps,
+      directory,
+      ["rev-list", "--count", `${head}..${remoteHead}`],
+      signal,
+    );
+    return `${branch} is ${behind} commit(s) behind ${upstream}; workers start from local ${head}`;
+  } catch (error) {
+    return `Could not compare ${ref} with its remote: ${errorMessage(error)}`;
+  }
+}
+
+/** Opens a draft pull request for an already pushed branch and returns its URL. */
+export async function createDraftPullRequest(
+  deps: RuntimeDeps,
+  directory: string,
+  head: string,
+  base: string | undefined,
+  signal?: AbortSignal,
+): Promise<string> {
+  const output = await execCommand(
+    deps,
+    "gh",
+    ["pr", "create", "--draft", "--fill", "--head", head, ...(base ? ["--base", base] : [])],
+    { cwd: directory, signal },
+  );
+  return output.split("\n").at(-1)!.trim();
+}

@@ -1,5 +1,5 @@
 import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
-import { lstat, readdir, readFile, realpath } from "node:fs/promises";
+import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorMessage, projectNameSchema, text, type ToolFactory } from "../../runtime/shared";
 
@@ -53,20 +53,47 @@ export async function listReports(
   return text(`Reports:\n${JSON.stringify(reports, null, 2)}`, reports);
 }
 
+/** Resolves a listed report name, optionally prefixed with its `namespace/`, inside its namespace folder. */
 export async function getReport(
   name: string,
   root: string,
   signal?: AbortSignal,
 ): Promise<CustomToolResult> {
+  const segments = name.split("/");
+  if (
+    segments.length > 2 ||
+    segments.some(
+      (segment) => !segment || segment === "." || segment === ".." || segment.includes("\\"),
+    )
+  )
+    throw new Error("Report name must be a listed name, optionally prefixed with its namespace");
+  const file = segments.at(-1)!;
+  if (!file.endsWith(".md")) throw new Error("Report path must name a Markdown file");
+  const reportsRoot = join(root, ".omp", "reports");
   signal?.throwIfAborted();
-  const path = await realpath(join(root, ".omp", "reports", name));
+  const namespaces =
+    segments.length === 2
+      ? [segments[0]!]
+      : (await readdir(reportsRoot, { withFileTypes: true }).catch(() => []))
+          .filter((entry) => entry.isDirectory())
+          .map((entry) => entry.name);
+  const matches = (
+    await Promise.all(
+      namespaces.map(async (namespace) => {
+        const path = join(reportsRoot, namespace, file);
+        try {
+          return (await lstat(path)).isFile() ? [path] : [];
+        } catch {
+          return [];
+        }
+      }),
+    )
+  ).flat();
   signal?.throwIfAborted();
-  const info = await lstat(path);
-  signal?.throwIfAborted();
-
-  if (!info.isFile() || !path.endsWith(".md"))
-    throw new Error("Report path must name a Markdown file");
-
+  if (matches.length === 0) throw new Error(`Unknown report: ${name}`);
+  if (matches.length > 1)
+    throw new Error(`Report name is ambiguous; prefix it with its namespace: ${name}`);
+  const path = matches[0]!;
   const content = await readFile(path, "utf8");
   signal?.throwIfAborted();
   return text(content, { path });
@@ -81,7 +108,7 @@ const reportsTool: ToolFactory = (pi) => {
     loadMode: "essential",
     approval: "read",
     description:
-      "Find durable scout reports across registered projects and independent research, then read a selected report.",
+      "Find durable scout reports across registered projects and independent research, then read a selected report by its listed name, optionally prefixed with its `namespace/`.",
     parameters: z.union([
       z
         .object({

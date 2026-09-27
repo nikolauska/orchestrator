@@ -28,13 +28,19 @@ export type TaskItem = {
   role?: string;
   pushTo?: string;
   startFrom?: string;
+  hold?: boolean;
+  pr?: boolean;
 };
 export type ProjectTaskParams = { project: string; context: string; tasks: TaskItem[] };
 export type IndependentTaskParams = { scope: "independent"; context: string; tasks: TaskItem[] };
 export type TaskParams = ProjectTaskParams | IndependentTaskParams;
 export type WorkersParams =
   | { op: "list" }
+  | { op: "read"; names: string[]; lines?: number }
   | { op: "send"; names: string[]; message: string }
+  | { op: "interrupt"; names: string[] }
+  | { op: "relaunch"; names: string[]; note: string }
+  | { op: "land"; names: string[] }
   | { op: "close"; names: string[]; discard?: boolean };
 export type ProjectPreflight = {
   scope: "project";
@@ -44,6 +50,8 @@ export type ProjectPreflight = {
   branch?: string;
   localChanges: string;
   starts: Record<string, string>;
+  /** Per-worker note when its starting branch lacks commits its remote already has. */
+  originWarnings: Record<string, string>;
 };
 export type IndependentPreflight = {
   scope: "independent";
@@ -58,7 +66,7 @@ export type WorkerRecord = {
   projectPath?: string;
   name: string;
   role?: string;
-  status: "working" | "blocked" | "failed";
+  status: "working" | "blocked" | "interrupted" | "ready" | "failed";
   workspace_id: string;
   tab_id: string;
   pane_id: string;
@@ -68,18 +76,22 @@ export type WorkerRecord = {
   lease_holder?: string;
   delivery_base?: string;
   branch?: string;
+  start_from?: string;
   push_to?: string;
+  hold?: boolean;
+  pr?: boolean;
   report_path?: string;
   local_changes?: string;
+  prompt?: string;
   error?: string;
+  launched_at?: string;
+  updated_at?: string;
   generation: number;
   watch?: AbortController;
 };
 
 export const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const LEASE_ID = /^[0-9a-fA-F]{32}$/;
-export const IMPLEMENTATION_PROMPT_SUFFIX =
-  "Complete this assignment directly; do not delegate to subagents. Commit all assignment changes before reporting completion.";
 
 export const projectNameSchema = (z: ExtensionAPI["zod"]) =>
   z.union([

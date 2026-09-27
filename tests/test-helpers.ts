@@ -74,6 +74,13 @@ export class FakeExec {
   readonly outputs = new Map<string, string>();
   readonly sessionEntries = new Map<string, unknown[]>();
   readonly sessionless = new Set<string>();
+  readonly screens = new Map<string, string>();
+  /** Upstream `remote refs/heads/x` per local ref, as `git for-each-ref` reports it. */
+  readonly upstreams = new Map<string, string>();
+  readonly remoteHeads = new Map<string, string>();
+  readonly knownCommits = new Set<string>();
+  prUrl = "https://github.com/example/fixture/pull/1";
+  prFails = false;
   projectHead = "base";
   projectBranch = "main";
   projectDirty = false;
@@ -120,9 +127,16 @@ export class FakeExec {
     if (command === "herdr" && args.includes("agent") && args.includes("start"))
       return this.#ok("{}");
     if (command === "herdr" && args.includes("agent") && args.includes("send-keys")) {
-      this.status.set(args[args.indexOf("send-keys") + 1], "working");
+      const pane = args[args.indexOf("send-keys") + 1];
+      this.status.set(pane, args.at(-1) === "esc" ? "idle" : "working");
       return this.#ok("{}");
     }
+    if (command === "herdr" && args.includes("agent") && args.includes("read"))
+      return this.#ok(this.screens.get(args[args.indexOf("read") + 1]) ?? "");
+    if (command === "gh" && args[0] === "pr")
+      return this.prFails
+        ? this.#fail("gh: not authenticated")
+        : this.#ok(`Creating\n${this.prUrl}`);
     if (command === "herdr" && args.includes("agent") && args.includes("prompt")) {
       const pane = args[args.indexOf("prompt") + 1];
       if (this.promptStallsOnce && !this.#reportedPromptStall) {
@@ -217,6 +231,18 @@ export class FakeExec {
     const path = args[1];
     const sub = args.slice(2);
     if (sub[0] === "reset") return this.#ok();
+    if (sub[0] === "rev-parse" && sub[1] === "--symbolic-full-name")
+      return this.#ok(this.projectBranch ? `refs/heads/${this.projectBranch}` : "HEAD");
+    if (sub[0] === "for-each-ref") return this.#ok(this.upstreams.get(sub.at(-1)!) ?? "");
+    if (sub[0] === "ls-remote") {
+      const head = this.remoteHeads.get(sub.at(-1)!);
+      return head ? this.#ok(`${head}\t${sub.at(-1)}`) : this.#fail("no remote ref");
+    }
+    if (sub[0] === "cat-file")
+      return this.knownCommits.has(sub.at(-1)!.replace("^{commit}", ""))
+        ? this.#ok()
+        : this.#fail("missing");
+    if (sub[0] === "rev-list") return this.#ok("3");
     if (sub[0] === "status")
       return this.#ok(
         path === this.project
