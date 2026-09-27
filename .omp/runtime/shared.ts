@@ -26,6 +26,10 @@ export type TaskItem = {
   name: string;
   task: string;
   role?: string;
+  /** Exact `provider/id`, optionally with a `:level` thinking suffix; mutually exclusive with role. */
+  model?: string;
+  /** Set by the task tool when it splits a `:level` suffix off `model`; never caller input. */
+  thinking?: string;
   pushTo?: string;
   startFrom?: string;
   hold?: boolean;
@@ -66,6 +70,8 @@ export type WorkerRecord = {
   projectPath?: string;
   name: string;
   role?: string;
+  model?: string;
+  thinking?: string;
   status: "working" | "blocked" | "interrupted" | "ready" | "failed";
   workspace_id: string;
   tab_id: string;

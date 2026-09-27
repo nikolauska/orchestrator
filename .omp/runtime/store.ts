@@ -19,6 +19,8 @@ const FIELDS: ReadonlyArray<
   ["project", "project", false],
   ["project_path", "projectPath", false],
   ["role", "role", false],
+  ["model", "model", false],
+  ["thinking", "thinking", false],
   ["workspace_id", "workspace_id", true],
   ["tab_id", "tab_id", true],
   ["pane_id", "pane_id", true],

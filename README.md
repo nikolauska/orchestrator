@@ -48,6 +48,10 @@ herdr integration install omp
 
    > Find the report from the checkout accessibility research.
 
+   > How much Claude usage is left this week?
+
+   > Run the audit on `openai-codex/gpt-5.5:high`.
+
 Orchestrator chooses the appropriate worker and scope from your request. Independent research runs outside registered projects in a separate disposable directory; authenticated external access requires explicit instructions.
 
 ## Delivery and recovery
@@ -59,6 +63,10 @@ Orchestrator does not discard uncertain work. A dirty checkout, conflict, failed
 Worker state lives in `.omp/orchestrator.db`, so workers survive an OMP restart: the next session reconnects to running workers and finishes delivery for any that completed meanwhile. Only one OMP session supervises workers at a time; another session opened in this repository can list workers and read their screens, and takes over once the supervising session exits.
 
 Workers start with the settings overlay in [`.omp/worker-config.yml`](.omp/worker-config.yml), which keeps unattended workers off interactive prompts without changing your own OMP configuration. A blocked worker's question reaches the root session with its screen, and supervision continues if you answer it directly in the worker's tab.
+
+## Models and usage
+
+Each worker runs on an OMP model role or on an exact model from `omp models`, optionally with a thinking level. Before launching larger work, Orchestrator checks provider usage with `omp usage`, which covers every account OMP itself signs in with. When a role's provider is running low, it moves the work to an equally strong model on a provider with room and tells you; it never quietly switches to a weaker model.
 
 ## Development
 

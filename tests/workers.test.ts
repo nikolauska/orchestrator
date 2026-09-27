@@ -185,6 +185,82 @@ describe("launch and control", () => {
     ).toBe("smol");
   });
 
+  test("starts an exact OMP model with its thinking level and keeps it across relaunch", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [
+        { kind: "scout", name: "deep", task: "work", model: "anthropic/claude-opus-5-5:high" },
+        { kind: "scout", name: "free", task: "work", model: "openrouter/qwen/qwen3-coder:free" },
+      ],
+    });
+    expect(result.isError).toBeUndefined();
+    const startArgs = (name: string) =>
+      fake.calls
+        .filter((call) => call.command === "herdr" && call.args.includes("start"))
+        .findLast((call) => call.args.includes(name))
+        ?.args.slice(-4);
+    expect(startArgs("deep")).toEqual([
+      "--model",
+      "anthropic/claude-opus-5-5",
+      "--thinking",
+      "high",
+    ]);
+    expect(startArgs("free")?.slice(-2)).toEqual(["--model", "openrouter/qwen/qwen3-coder:free"]);
+    expect(result.details).toContainEqual(
+      expect.objectContaining({
+        name: "deep",
+        model: "anthropic/claude-opus-5-5",
+        thinking: "high",
+      }),
+    );
+
+    instance.dispose();
+    fake.goneAgents.add("pane:deep");
+    const restarted = runtime(root, fake, []);
+    await restarted.runWorkers({ op: "list" });
+    fake.goneAgents.delete("pane:deep");
+    fake.calls.length = 0;
+    await restarted.runWorkers({ op: "relaunch", names: ["deep"], note: "The tab crashed" });
+    expect(startArgs("deep")).toEqual([
+      "--model",
+      "anthropic/claude-opus-5-5",
+      "--thinking",
+      "high",
+    ]);
+  });
+
+  test("rejects inexact models and unsupported thinking before acquiring resources", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const instance = runtime(root, fake, []);
+    await register(instance, project);
+    for (const [item, expected] of [
+      [{ model: "opus" }, "Unknown OMP model: opus"],
+      [{ model: "anthropic/claude-opus-5-5:ultra" }, "Thinking level ultra is not supported"],
+      [{ model: "openrouter/qwen/qwen3-coder:free:high" }, "it has no thinking levels"],
+      [{ model: "anthropic/claude-opus-5-5", role: "smol" }, "role or model, not both"],
+    ] as const) {
+      const before = fake.calls.length;
+      const result = await instance.runTask({
+        project: "fixture",
+        context: "",
+        tasks: [{ kind: "scout", name: "picky", task: "work", ...item }],
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain(expected);
+      expect(
+        fake.calls
+          .slice(before)
+          .some((call) => call.command === "treehouse" || call.command === "herdr"),
+      ).toBe(false);
+    }
+  });
+
   test("rejects empty role and pushTo before acquiring resources", async () => {
     const { root, project } = await fixtureRoot();
     const fake = new FakeExec(project);
@@ -357,7 +433,13 @@ describe("delivery", () => {
     const fake = new FakeExec(project);
     const messages: Array<{ message: string; options: unknown }> = [];
     const { instance, registered } = extensionRuntime(root, fake, messages);
-    expect(registered.toSorted()).toEqual(["orchestrator_task", "projects", "reports", "workers"]);
+    expect(registered.toSorted()).toEqual([
+      "orchestrator_task",
+      "projects",
+      "reports",
+      "usage",
+      "workers",
+    ]);
     await register(instance, project);
     await instance.runTask({
       project: "fixture",

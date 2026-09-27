@@ -286,7 +286,7 @@ export function startOmpAgent(
   name: string,
   pane: string,
   directory: string,
-  role: string | undefined,
+  selection: Pick<WorkerRecord, "role" | "model" | "thinking">,
   signal?: AbortSignal,
 ): Promise<string> {
   return execCommand(
@@ -304,7 +304,9 @@ export function startOmpAgent(
       "--cwd",
       directory,
       `--config=${WORKER_CONFIG}`,
-      ...(role ? ["--model", `@${role}`] : []),
+      ...(selection.role ? ["--model", `@${selection.role}`] : []),
+      ...(selection.model ? ["--model", selection.model] : []),
+      ...(selection.thinking ? ["--thinking", selection.thinking] : []),
     ],
     { signal },
   );

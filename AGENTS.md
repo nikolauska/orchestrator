@@ -46,6 +46,9 @@ Use `projects` to register, list, or unregister repositories. Registration needs
   - `tiny`: low-risk labels and classification only.
   - `advisor`: only when the user asks for it (a more expensive model for advisory reviews, readiness assessments, unresolved-decision analysis).
   - `task`: only to deliberately select OMP's general-purpose task lane.
+- `model` picks an exact `provider/id` from `omp models` instead of a role, with an optional `:level` thinking suffix such as `anthropic/claude-opus-5-5:high`. Set `role` or `model`, not both. A model the user names always wins.
+- Before launching a batch or long-running work, check `usage`, which also shows which provider each role resolves to. When that provider's account has little left in a window that won't reset before the work likely finishes, or has used much more of a window than has elapsed, pick a model of equal strength on a provider with room and tell the user about the swap and why. Never drop to a weaker model to save quota; if no equal option has room, tell the user instead of launching.
+- Answer questions about quota, rate limits, or remaining usage with `usage`.
 - Project workers start from the checkout's committed `HEAD`, or from the committed tip of a local branch named in `startFrom`. Local uncommitted changes are excluded and disclosed in scout reports. When a launched worker carries `origin_warning`, tell the user its start is behind the remote.
 - Independent scope accepts scouts only, without `pushTo`, `startFrom`, `hold`, or `pr`. Independent scouts have no project context, may use public web search and public URLs, and use authenticated systems only when the assignment says so.
 - Scouts write a standalone Markdown report under `.omp/reports/` (independent ones under `_independent`, with source URLs and the research date) and return a concise conclusion.

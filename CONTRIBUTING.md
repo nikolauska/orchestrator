@@ -10,7 +10,7 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 .omp/runtime/shared.ts                 Shared types and helpers
 .omp/runtime/store.ts                  Durable worker registry and supervising-session ownership, backed by SQLite
 .omp/runtime/spaces.ts                 Herdr project and research space helpers
-.omp/runtime/{git,herdr,treehouse,session}.ts  CLI and session-file wrappers
+.omp/runtime/{git,herdr,omp,treehouse,session}.ts  CLI and session-file wrappers
 .omp/worker-config.yml                 OMP settings overlay passed to every worker
 .omp/projects.json                     Local project registry; ignored, never commit
 .omp/orchestrator.db                   Local worker state; ignored, never commit
@@ -20,6 +20,7 @@ tests/projects.test.ts                 Projects tool behavior tests
 tests/reports.test.ts                  Reports tool behavior tests
 tests/task.test.ts                     Task tool behavior tests
 tests/workers.test.ts                  Workers tool behavior tests
+tests/usage.test.ts                    Usage summary behavior tests
 ```
 
 ## Conventions

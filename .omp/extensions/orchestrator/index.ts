@@ -3,6 +3,7 @@ import type { ToolAPI } from "../../runtime/shared";
 import taskTool from "./orchestrator_task";
 import projectsTool from "./projects";
 import reportsTool from "./reports";
+import usageTool from "./usage";
 import workersTool from "./workers";
 
 // Tools register through an extension because only ExtensionAPI.sendMessage can trigger a
@@ -16,7 +17,7 @@ const orchestrator: ExtensionFactory = (pi) => {
     zod: pi.zod,
     sendMessage: pi.sendMessage.bind(pi),
   };
-  for (const factory of [projectsTool, taskTool, workersTool, reportsTool])
+  for (const factory of [projectsTool, taskTool, workersTool, reportsTool, usageTool])
     pi.registerTool(factory(api));
 };
 

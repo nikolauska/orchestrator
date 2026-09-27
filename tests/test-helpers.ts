@@ -77,6 +77,23 @@ export class FakeExec {
   readonly screens = new Map<string, string>();
   /** Upstream `remote refs/heads/x` per local ref, as `git for-each-ref` reports it. */
   readonly upstreams = new Map<string, string>();
+  /** `omp models --json` catalog; one id carries its own `:free` suffix like OpenRouter's. */
+  models: unknown[] = [
+    {
+      provider: "anthropic",
+      kind: "chat",
+      selector: "anthropic/claude-opus-5-5",
+      thinking: ["low", "medium", "high", "xhigh", "max"],
+    },
+    {
+      provider: "openrouter",
+      kind: "chat",
+      selector: "openrouter/qwen/qwen3-coder:free",
+      thinking: null,
+    },
+  ];
+  usage: unknown = { reports: [], capacity: {} };
+  modelRoles: Record<string, string> = {};
   readonly remoteHeads = new Map<string, string>();
   readonly knownCommits = new Set<string>();
   prUrl = "https://github.com/example/fixture/pull/1";
@@ -181,6 +198,11 @@ export class FakeExec {
         this.waits.set(pane, { resolve: () => resolve(this.#ok("{}")), reject });
       });
     }
+    if (command === "omp" && args[0] === "models")
+      return this.#ok(JSON.stringify({ models: this.models }));
+    if (command === "omp" && args[0] === "usage") return this.#ok(JSON.stringify(this.usage));
+    if (command === "omp" && args[0] === "config")
+      return this.#ok(JSON.stringify({ key: args[2], value: this.modelRoles }));
     if (command === "git") return this.#git(args, options.cwd);
     return this.#fail(`unexpected command: ${command} ${args.join(" ")}`);
   };

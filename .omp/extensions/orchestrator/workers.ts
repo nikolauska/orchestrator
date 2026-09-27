@@ -116,6 +116,8 @@ export function publicRecord(record: WorkerRecord): Record<string, unknown> {
     ...(record.scope === "independent" ? { scope: "independent" } : { project: record.project }),
     name: record.name,
     ...(record.role ? { role: record.role } : {}),
+    ...(record.model ? { model: record.model } : {}),
+    ...(record.thinking ? { thinking: record.thinking } : {}),
     status: record.status,
     ...(record.launched_at ? { launched_at: record.launched_at } : {}),
     ...(record.updated_at ? { updated_at: record.updated_at } : {}),
@@ -533,7 +535,7 @@ async function relaunchWorker(
     // Record the new space before starting OMP so a later failure still points at it.
     persist(state, record);
     await waitForShell(state.deps, record.pane_id, signal);
-    await startOmpAgent(state.deps, record.name, record.pane_id, directory, record.role, signal);
+    await startOmpAgent(state.deps, record.name, record.pane_id, directory, record, signal);
     await promptAgent(
       state.deps,
       record.pane_id,
@@ -897,6 +899,8 @@ function terminal(
     ...(record.scope === "independent" ? { scope: "independent" } : { project: record.project }),
     name: record.name,
     ...(record.role ? { role: record.role } : {}),
+    ...(record.model ? { model: record.model } : {}),
+    ...(record.thinking ? { thinking: record.thinking } : {}),
     status,
     output,
     ...Object.fromEntries(Object.entries(extra).filter(([, value]) => value !== undefined)),

@@ -29,6 +29,6 @@ Independent scouts receive a separate disposable working directory, have no proj
 
 ## Assignment choices
 
-Each assignment has a descriptive worker name and a clear task. A request may choose an available OMP model role for an assignment; omitting it uses the default model.
+Each assignment has a descriptive worker name and a clear task. A request may choose an available OMP model role for an assignment, or an exact available model with an optional thinking level; omitting both uses the default model. A model that is not an exact match for an available model, or a thinking level that model doesn't support, is refused before anything starts. A relaunched worker keeps its model.
 
 Workers do not delegate further work. They run with fixed settings that keep them from stopping on interactive prompts meant for your own sessions; your own OMP configuration is not changed.

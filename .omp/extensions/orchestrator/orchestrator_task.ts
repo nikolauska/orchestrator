@@ -15,6 +15,7 @@ import {
   type ToolFactory,
   type WorkerRecord,
 } from "../../runtime/shared";
+import { chatModels, resolveModel } from "../../runtime/omp";
 import { readProjects, validateName } from "./projects";
 import {
   branchHead,
@@ -71,10 +72,11 @@ export async function runTask(
       // OMP's strict tool schema transport materializes omitted optional fields as "" or false; keep omission as default behavior.
       params = {
         ...params,
-        tasks: params.tasks.map(({ pushTo, role, startFrom, hold, pr, ...item }) => ({
+        tasks: params.tasks.map(({ pushTo, role, model, startFrom, hold, pr, ...item }) => ({
           ...item,
           ...(pushTo ? { pushTo } : {}),
           ...(role ? { role } : {}),
+          ...(model ? { model } : {}),
           ...(startFrom ? { startFrom } : {}),
           ...(hold ? { hold } : {}),
           ...(pr ? { pr } : {}),
@@ -85,6 +87,20 @@ export async function runTask(
     await resumeWorkers(state);
     const active = params.tasks.find((item) => hasWorker(state, item.name));
     if (active) throw new Error(`Worker name already retained: ${active.name}`);
+    if (params.tasks.some((item) => item.model)) {
+      const catalog = await chatModels(state.deps, root, signal);
+      params = {
+        ...params,
+        tasks: params.tasks.map((item) => {
+          if (!item.model) return item;
+          try {
+            return { ...item, ...resolveModel(catalog, item.model) };
+          } catch (error) {
+            throw new Error(`Invalid OMP model for ${item.name}: ${errorMessage(error)}`);
+          }
+        }),
+      };
+    }
     const preflight = await preflightTask(state, root, params, signal);
     const launched = await Promise.all(
       params.tasks.map((item) =>
@@ -127,6 +143,12 @@ function validateTask(params: TaskParams): void {
       throw new Error(`Task for ${item.name} must be non-empty`);
     if (item.role !== undefined && (typeof item.role !== "string" || !NAME.test(item.role)))
       throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
+    if (item.model !== undefined && (typeof item.model !== "string" || !/^\S+$/.test(item.model)))
+      throw new Error(`Invalid OMP model for ${item.name}: ${item.model}`);
+    if (item.role !== undefined && item.model !== undefined)
+      throw new Error(`Task ${item.name} can set role or model, not both`);
+    if (item.thinking !== undefined)
+      throw new Error(`Set thinking for ${item.name} with a :level suffix on model`);
     if (independent && item.kind !== "scout")
       throw new Error("Independent scope accepts scout tasks only");
     if (independent && item.pushTo !== undefined)
@@ -395,7 +417,7 @@ async function launchWorker(
     paneId = space.paneId;
     await waitForShell(state.deps, paneId, signal);
     ompMayHaveStarted = true;
-    await startOmpAgent(state.deps, item.name, paneId, directory, item.role, signal);
+    await startOmpAgent(state.deps, item.name, paneId, directory, item, signal);
     prompt = workerPrompt(preflight, context, item, directory, reportPath);
     await promptAgent(state.deps, paneId, prompt, signal);
     const agent = await getAgent(state.deps, paneId, signal);
@@ -443,6 +465,8 @@ async function launchWorker(
         : { project: preflight.project, delivery_base: preflight.head }),
       name: item.name,
       ...(item.role ? { role: item.role } : {}),
+      ...(item.model ? { model: item.model } : {}),
+      ...(item.thinking ? { thinking: item.thinking } : {}),
       status: "failed",
       ...(directory
         ? preflight.scope === "independent"
@@ -474,6 +498,8 @@ async function launchWorker(
       kind: item.kind,
       name: item.name,
       role: item.role,
+      model: item.model,
+      thinking: item.thinking,
       status,
       workspace_id: space.workspaceId,
       tab_id: space.tabId,
@@ -513,7 +539,7 @@ const taskTool: ToolFactory = (pi) => {
     loadMode: "essential",
     approval: "exec",
     description:
-      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role; startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; pr opens a draft pull request after pushTo; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
+      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role, or model picks an exact provider/id from the OMP model catalog with an optional :level thinking suffix (not both); startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; pr opens a draft pull request after pushTo; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
     parameters: z.union([
       z
         .object({
@@ -528,6 +554,7 @@ const taskTool: ToolFactory = (pi) => {
                     name: z.string(),
                     task: z.string(),
                     role: z.string().optional(),
+                    model: z.string().optional(),
                     pushTo: z.string().optional(),
                     startFrom: z.string().optional(),
                     hold: z.boolean().optional(),
@@ -540,6 +567,7 @@ const taskTool: ToolFactory = (pi) => {
                     name: z.string(),
                     task: z.string(),
                     role: z.string().optional(),
+                    model: z.string().optional(),
                     startFrom: z.string().optional(),
                   })
                   .strict(),
@@ -561,6 +589,7 @@ const taskTool: ToolFactory = (pi) => {
                   name: z.string(),
                   task: z.string(),
                   role: z.string().optional(),
+                  model: z.string().optional(),
                 })
                 .strict(),
             )
