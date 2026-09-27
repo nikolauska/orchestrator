@@ -1,13 +1,20 @@
 import { expect } from "bun:test";
 import { zod } from "@oh-my-pi/pi-coding-agent";
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { CustomToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import { mkdtemp, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import projectsTool from "../.omp/tools/projects";
-import taskTool from "../.omp/tools/orchestrator_task";
-import type { ProjectParams, TaskParams, WorkersParams, ExecResult } from "../.omp/runtime/shared";
-import workersTool from "../.omp/tools/workers";
+import orchestratorExtension from "../.omp/extensions/orchestrator";
+import projectsTool from "../.omp/extensions/orchestrator/projects";
+import taskTool from "../.omp/extensions/orchestrator/orchestrator_task";
+import type {
+  ProjectParams,
+  TaskParams,
+  ToolAPI,
+  WorkersParams,
+  ExecResult,
+} from "../.omp/runtime/shared";
+import workersTool from "../.omp/extensions/orchestrator/workers";
 
 type Call = { command: string; args: string[]; cwd?: string };
 type Waiter = { resolve: () => void; reject: (error: Error) => void };
@@ -20,15 +27,18 @@ export type FakeWorkspace = {
 };
 
 type ToolLike = {
+  name: string;
   execute(
     toolCallId: string,
     params: unknown,
+    signal: AbortSignal | undefined,
     onUpdate: unknown,
     context: unknown,
-    signal?: AbortSignal,
   ): Promise<CustomToolResult>;
   onSession?: (event: unknown, context: unknown) => void | Promise<void>;
 };
+
+type Message = { message: string; options: unknown };
 
 export interface ToolHarness {
   runProjects(params: ProjectParams, signal?: AbortSignal): Promise<CustomToolResult>;
@@ -38,8 +48,10 @@ export interface ToolHarness {
 }
 
 export const roots: string[] = [];
+const restores: Array<() => void> = [];
 
 export async function cleanup(): Promise<void> {
+  for (const restore of restores.splice(0).reverse()) restore();
   await Promise.all(roots.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 }
 
@@ -302,7 +314,7 @@ export class FakeExec {
 export function runtime(
   root: string,
   fake: FakeExec,
-  messages: Array<{ message: string; options: unknown }>,
+  messages: Message[],
   env: Record<string, string | undefined> = {
     HERDR_ENV: "1",
     HERDR_SOCKET_PATH: "socket",
@@ -310,28 +322,73 @@ export function runtime(
   },
   neutralRoot?: string,
 ): ToolHarness {
-  const api = {
+  const api: ToolAPI = {
     cwd: root,
+    exec: fake.exec as unknown as ToolAPI["exec"],
+    logger: {} as ToolAPI["logger"],
+    zod,
+    sendMessage: (message, options) => {
+      messages.push({ message, options });
+    },
+    env,
+    neutralRoot,
+  };
+  return harness([projectsTool(api), taskTool(api), workersTool(api)] as unknown as ToolLike[]);
+}
+
+// Loads the real extension entry the way OMP does: cwd and Herdr environment come from the process.
+export function extensionRuntime(
+  root: string,
+  fake: FakeExec,
+  messages: Message[],
+): { instance: ToolHarness; registered: string[] } {
+  const previousCwd = process.cwd();
+  const herdr = ["HERDR_ENV", "HERDR_SOCKET_PATH", "HERDR_PANE_ID"] as const;
+  const previousEnv = herdr.map((key) => [key, process.env[key]] as const);
+  restores.push(() => {
+    for (const [key, value] of previousEnv) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+  Object.assign(process.env, {
+    HERDR_ENV: "1",
+    HERDR_SOCKET_PATH: "socket",
+    HERDR_PANE_ID: "workspace:root",
+  });
+
+  const tools: ToolLike[] = [];
+  const pi = {
     exec: fake.exec,
     logger: {},
     zod,
-    ui: { notify: () => {} },
+    registerTool: (tool: ToolLike) => tools.push(tool),
     sendMessage: (message: string, options: unknown) => messages.push({ message, options }),
-    env,
-    neutralRoot,
-  } as unknown as Parameters<typeof projectsTool>[0];
-  const projects = projectsTool(api) as unknown as ToolLike;
-  const task = taskTool(api) as unknown as ToolLike;
-  const workers = workersTool(api) as unknown as ToolLike;
-  const execute = (tool: ToolLike, params: unknown, signal?: AbortSignal) =>
-    tool.execute("test", params, undefined, undefined, signal);
+  } as unknown as ExtensionAPI;
+  process.chdir(root);
+  try {
+    void orchestratorExtension(pi);
+  } finally {
+    process.chdir(previousCwd);
+  }
+  return { instance: harness(tools), registered: tools.map((tool) => tool.name) };
+}
+
+function harness(tools: ToolLike[]): ToolHarness {
+  const tool = (name: string) => {
+    const found = tools.find((item) => item.name === name);
+    if (!found) throw new Error(`tool ${name} is not registered`);
+    return found;
+  };
+  const execute = (name: string, params: unknown, signal?: AbortSignal) =>
+    tool(name).execute("test", params, signal, undefined, undefined);
 
   return {
-    runProjects: (params, signal) => execute(projects, params, signal),
-    runTask: (params, signal) => execute(task, params, signal),
-    runWorkers: (params, signal) => execute(workers, params, signal),
+    runProjects: (params, signal) => execute("projects", params, signal),
+    runTask: (params, signal) => execute("orchestrator_task", params, signal),
+    runWorkers: (params, signal) => execute("workers", params, signal),
     dispose: () => {
-      void workers.onSession?.({ reason: "shutdown" }, undefined);
+      void tool("workers").onSession?.({ reason: "shutdown" }, undefined);
     },
   };
 }

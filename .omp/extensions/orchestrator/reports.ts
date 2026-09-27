@@ -1,7 +1,7 @@
-import type { CustomToolFactory, CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import { join } from "node:path";
-import { errorMessage, projectNameSchema, text } from "../runtime/shared";
+import { errorMessage, projectNameSchema, text, type ToolFactory } from "../../runtime/shared";
 
 export async function listReports(
   project: string | undefined,
@@ -72,7 +72,7 @@ export async function getReport(
   return text(content, { path });
 }
 
-const reportsTool: CustomToolFactory = (pi) => {
+const reportsTool: ToolFactory = (pi) => {
   const z = pi.zod;
 
   return {
@@ -91,7 +91,7 @@ const reportsTool: CustomToolFactory = (pi) => {
         .strict(),
       z.object({ op: z.literal("get"), name: z.string() }).strict(),
     ]),
-    execute: async (_id, params, _onUpdate, _ctx, signal?: AbortSignal) => {
+    execute: async (_id, params, signal?: AbortSignal) => {
       try {
         if (params.op === "list") return await listReports(params.project, pi.cwd, signal);
 

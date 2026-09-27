@@ -5,16 +5,17 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 ## Structure
 
 ```text
-.omp/tools/*.ts                   Custom tool factories
-.omp/runtime/shared.ts             Shared types and helpers
-.omp/runtime/store.ts              Durable worker registry backed by SQLite
-.omp/projects.json                Local project registry; ignored, never commit
-.omp/orchestrator.db              Local worker state; ignored, never commit
-docs/domain/                      Confirmed customer-visible behavior
-tests/test-helpers.ts             Shared worker test fixtures
-tests/projects.test.ts             Projects tool behavior tests
-tests/task.test.ts                 Task tool behavior tests
-tests/workers.test.ts              Workers tool behavior tests
+.omp/extensions/orchestrator/index.ts  Extension entry that registers every tool
+.omp/extensions/orchestrator/*.ts      Tool factories
+.omp/runtime/shared.ts                 Shared types and helpers
+.omp/runtime/store.ts                  Durable worker registry backed by SQLite
+.omp/projects.json                     Local project registry; ignored, never commit
+.omp/orchestrator.db                   Local worker state; ignored, never commit
+docs/domain/                           Confirmed customer-visible behavior
+tests/test-helpers.ts                  Shared worker test fixtures
+tests/projects.test.ts                 Projects tool behavior tests
+tests/task.test.ts                     Task tool behavior tests
+tests/workers.test.ts                  Workers tool behavior tests
 ```
 
 ## Conventions

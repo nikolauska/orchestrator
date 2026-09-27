@@ -3,6 +3,7 @@ import { join } from "node:path";
 import {
   cleanup,
   eventually,
+  extensionRuntime,
   FakeExec,
   fixtureRoot,
   launchedPair,
@@ -348,6 +349,24 @@ describe("delivery", () => {
     );
     expect(returns).toHaveLength(2);
     expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
+  });
+
+  test("the extension entry wakes the root session when a worker settles", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const { instance, registered } = extensionRuntime(root, fake, messages);
+    expect(registered.toSorted()).toEqual(["orchestrator_task", "projects", "reports", "workers"]);
+    await register(instance, project);
+    await instance.runTask({
+      project: "fixture",
+      context: "shared",
+      tasks: [{ kind: "implementation", name: "alpha", task: "A" }],
+    });
+    fake.settle("alpha");
+    await eventually(() => expect(messages.length).toBe(1));
+    expect(messages[0]!.message).toContain('"status": "merged"');
+    expect(messages[0]!.options).toEqual({ triggerTurn: true, deliverAs: "nextTurn" });
   });
 
   test("pushes without force or changing the registered checkout", async () => {

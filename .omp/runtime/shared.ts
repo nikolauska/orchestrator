@@ -1,4 +1,4 @@
-import type { ExtensionAPI, CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, CustomToolResult, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 
 export type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 export type RuntimeDeps = {
@@ -6,6 +6,13 @@ export type RuntimeDeps = {
   sendMessage(message: string, options: { triggerTurn: true; deliverAs: "nextTurn" }): void;
   logger: ExtensionAPI["logger"];
 };
+export type ToolAPI = RuntimeDeps & {
+  cwd: string;
+  zod: ExtensionAPI["zod"];
+  env?: Record<string, string | undefined>;
+  neutralRoot?: string;
+};
+export type ToolFactory = (api: ToolAPI) => ToolDefinition<any, any>;
 
 export type ProjectParams =
   | { op: "list" }

@@ -1,10 +1,17 @@
-import type { CustomToolAPI, CustomToolFactory, CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { errorMessage, NAME, projectNameSchema, text } from "../runtime/shared";
+import {
+  errorMessage,
+  NAME,
+  projectNameSchema,
+  text,
+  type ToolAPI,
+  type ToolFactory,
+} from "../../runtime/shared";
 
-type Exec = CustomToolAPI["exec"];
+type Exec = ToolAPI["exec"];
 
 async function runCommand(
   exec: Exec,
@@ -127,7 +134,7 @@ function projectResult(projects: Record<string, string>): CustomToolResult {
   return text(`Registered projects:\n${JSON.stringify(items, null, 2)}`, items);
 }
 
-const projectsTool: CustomToolFactory = (pi) => {
+const projectsTool: ToolFactory = (pi) => {
   const z = pi.zod;
 
   return {
@@ -150,7 +157,7 @@ const projectsTool: CustomToolFactory = (pi) => {
       z.object({ op: z.literal("remove"), name: projectNameSchema(z) }).strict(),
       z.object({ op: z.literal("set-root"), path: z.string() }).strict(),
     ]),
-    execute: async (_id, params, _onUpdate, _ctx, signal) => {
+    execute: async (_id, params, signal) => {
       const root = pi.cwd;
       const exec = pi.exec;
       try {

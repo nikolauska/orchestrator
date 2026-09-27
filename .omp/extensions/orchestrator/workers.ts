@@ -1,4 +1,4 @@
-import type { CustomToolAPI, CustomToolFactory, CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { lstat, readFile, rm } from "node:fs/promises";
@@ -11,18 +11,26 @@ import {
   pushHead,
   rebaseOnto,
   statusAt,
-} from "../runtime/git";
-import { closeWorkerSpace, getAgent, promptAgent, readAgent, waitForAgent } from "../runtime/herdr";
-import { WorkerStore } from "../runtime/store";
-import { returnLease } from "../runtime/treehouse";
+} from "../../runtime/git";
+import {
+  closeWorkerSpace,
+  getAgent,
+  promptAgent,
+  readAgent,
+  waitForAgent,
+} from "../../runtime/herdr";
+import { WorkerStore } from "../../runtime/store";
+import { returnLease } from "../../runtime/treehouse";
 import {
   errorMessage,
   NAME,
   text,
   type RuntimeDeps,
+  type ToolAPI,
+  type ToolFactory,
   type WorkerRecord,
   type WorkersParams,
-} from "../runtime/shared";
+} from "../../runtime/shared";
 
 export type WorkerState = {
   deps: RuntimeDeps;
@@ -37,28 +45,17 @@ export type WorkerState = {
   active: boolean;
 };
 
-type RuntimeAPI = CustomToolAPI & {
-  sendMessage?: RuntimeDeps["sendMessage"];
-  env?: Record<string, string | undefined>;
-  neutralRoot?: string;
-};
+const states = new WeakMap<ToolAPI, WorkerState>();
 
-const states = new WeakMap<CustomToolAPI, WorkerState>();
-
-export function stateFor(pi: CustomToolAPI): WorkerState {
+export function stateFor(pi: ToolAPI): WorkerState {
   const existing = states.get(pi);
   if (existing) return existing;
 
-  const candidate = pi as RuntimeAPI;
-  const sendMessage = candidate.sendMessage
-    ? candidate.sendMessage.bind(pi)
-    : (message: string) => pi.ui.notify(message, "info");
   const state: WorkerState = {
-    deps: { exec: pi.exec, logger: pi.logger, sendMessage },
+    deps: { exec: pi.exec, logger: pi.logger, sendMessage: pi.sendMessage },
     root: pi.cwd,
-    env: candidate.env ?? process.env,
-    neutralRoot:
-      candidate.neutralRoot ?? join(homedir(), ".omp", "orchestrator", "independent-workers"),
+    env: pi.env ?? process.env,
+    neutralRoot: pi.neutralRoot ?? join(homedir(), ".omp", "orchestrator", "independent-workers"),
     records: new Map(),
     store: new WorkerStore(join(pi.cwd, ".omp", "orchestrator.db")),
     deliveryQueue: Promise.resolve(),
@@ -554,7 +551,7 @@ function terminal(
   };
 }
 
-const workersTool: CustomToolFactory = (pi) => {
+const workersTool: ToolFactory = (pi) => {
   const state = stateFor(pi);
   const z = pi.zod;
 
@@ -578,8 +575,7 @@ const workersTool: CustomToolFactory = (pi) => {
         })
         .strict(),
     ]),
-    execute: async (_id, params, _onUpdate, _ctx, signal) =>
-      runWorkers(state, params as WorkersParams, signal),
+    execute: async (_id, params, signal) => runWorkers(state, params as WorkersParams, signal),
     onSession: (event) => handleSession(state, event.reason),
   };
 };

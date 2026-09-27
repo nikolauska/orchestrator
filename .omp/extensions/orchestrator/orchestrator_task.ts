@@ -1,4 +1,4 @@
-import type { CustomToolFactory, CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { mkdir, realpath, rm } from "node:fs/promises";
 import {
@@ -13,8 +13,9 @@ import {
   type ProjectTaskParams,
   type TaskItem,
   type TaskParams,
+  type ToolFactory,
   type WorkerRecord,
-} from "../runtime/shared";
+} from "../../runtime/shared";
 import { readProjects, validateName } from "./projects";
 import {
   branchHead,
@@ -25,7 +26,7 @@ import {
   status,
   topLevel,
   version as gitVersion,
-} from "../runtime/git";
+} from "../../runtime/git";
 import {
   closeWorkerSpace,
   createTab,
@@ -39,13 +40,13 @@ import {
   startOmpAgent,
   waitForShell,
   type HerdrSpace,
-} from "../runtime/herdr";
+} from "../../runtime/herdr";
 import {
   acquireLease,
   returnLease,
   type TreehouseLease,
   version as treehouseVersion,
-} from "../runtime/treehouse";
+} from "../../runtime/treehouse";
 import {
   adoptWorker,
   handleSession,
@@ -506,7 +507,7 @@ async function launchWorker(
   }
 }
 
-const taskTool: CustomToolFactory = (pi) => {
+const taskTool: ToolFactory = (pi) => {
   const state = stateFor(pi);
   const z = pi.zod;
 
@@ -570,8 +571,7 @@ const taskTool: CustomToolFactory = (pi) => {
         })
         .strict(),
     ]),
-    execute: async (_id, params, _onUpdate, _ctx, signal) =>
-      runTask(state, pi.cwd, params as TaskParams, signal),
+    execute: async (_id, params, signal) => runTask(state, pi.cwd, params as TaskParams, signal),
     onSession: (event) => handleSession(state, event.reason),
   };
 };
