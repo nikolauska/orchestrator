@@ -783,6 +783,7 @@ async function pushWorker(
       record.worktree!,
       record.push_to!,
       record.start_from,
+      record.delivery_base!,
     );
     return terminal(record, "pushed", output, { branch: record.push_to, pr_url: url });
   } catch (error) {

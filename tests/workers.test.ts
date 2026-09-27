@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, test, vi } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
+import { createDraftPullRequest } from "../.omp/runtime/git";
+import { execCommand, type RuntimeDeps } from "../.omp/runtime/shared";
 import {
   cleanup,
   eventually,
@@ -936,12 +938,21 @@ describe("delivery options", () => {
       "pr",
       "create",
       "--draft",
-      "--fill",
+      "--title",
+      "Implement work",
+      "--body",
+      "Why it matters",
       "--head",
       "feature/opened",
       "--base",
       "release",
     ]);
+    expect(fake.calls).toContainEqual(
+      expect.objectContaining({
+        command: "git",
+        args: expect.arrayContaining(["log", "release123..HEAD"]),
+      }),
+    );
 
     fake.prFails = true;
     fake.settle("refused");
@@ -1002,20 +1013,20 @@ describe("delivery options", () => {
       );
     }
     const creates = fake.calls.filter((call) => call.command === "glab" && call.args[0] === "mr");
+    const fill = ["--title", "Implement work", "--description", "Why it matters", "--yes"];
     expect(creates.map((call) => call.args)).toEqual([
       [
         "mr",
         "create",
         "--draft",
-        "--fill",
-        "--yes",
+        ...fill,
         "--source-branch",
         "feature/ssh",
         "--target-branch",
         "release",
       ],
-      ["mr", "create", "--draft", "--fill", "--yes", "--source-branch", "feature/https"],
-      ["mr", "create", "--draft", "--fill", "--yes", "--source-branch", "feature/hosted"],
+      ["mr", "create", "--draft", ...fill, "--source-branch", "feature/https"],
+      ["mr", "create", "--draft", ...fill, "--source-branch", "feature/hosted"],
     ]);
     expect(creates.every((call) => call.cwd?.includes(".treehouse-"))).toBe(true);
     expect(
@@ -1064,5 +1075,101 @@ describe("delivery options", () => {
       }),
     );
     expect(parsed(messages)[1]).not.toHaveProperty("pr_url");
+  });
+});
+
+describe("draft request text", () => {
+  /** Runs real git so the detached-HEAD worktree is genuine; gh and glab only record their args. */
+  function realGit(forgeCalls: string[][]): RuntimeDeps {
+    const exec = async (command: string, args: string[], options: { cwd?: string } = {}) => {
+      if (command === "gh" || command === "glab") {
+        forgeCalls.push([command, ...args]);
+        return {
+          code: 0,
+          stderr: "",
+          stdout:
+            command === "gh"
+              ? "https://github.com/example/fixture/pull/3\n"
+              : "!4 Draft\n https://gitlab.com/example/fixture/-/merge_requests/4\n",
+        };
+      }
+      const child = Bun.spawn([command, ...args], {
+        cwd: options.cwd,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [stdout, stderr, code] = await Promise.all([
+        new Response(child.stdout).text(),
+        new Response(child.stderr).text(),
+        child.exited,
+      ]);
+      return { code, stdout, stderr };
+    };
+    return { exec, logger: console, sendMessage() {} } as unknown as RuntimeDeps;
+  }
+
+  test("fills gh and glab requests from a detached worktree's own commits", async () => {
+    const { root } = await fixtureRoot();
+    const forgeCalls: string[][] = [];
+    const deps = realGit(forgeCalls);
+    const git = (cwd: string, ...args: string[]) => execCommand(deps, "git", ["-C", cwd, ...args]);
+    const origin = join(root, "origin.git");
+    const checkout = join(root, "checkout");
+    const worktree = join(root, "worktree");
+    await execCommand(deps, "git", ["init", "-q", "--bare", "-b", "main", origin]);
+    await execCommand(deps, "git", ["init", "-q", "-b", "main", checkout]);
+    await git(checkout, "remote", "add", "origin", origin);
+    await git(checkout, "config", "user.email", "worker@example.com");
+    await git(checkout, "config", "user.name", "Worker");
+    await git(checkout, "commit", "-q", "--allow-empty", "-m", "Initial");
+    await git(checkout, "push", "-q", "origin", "main");
+    const base = await git(checkout, "rev-parse", "HEAD");
+    // Treehouse hands workers a detached worktree, so the pushed branch never exists locally.
+    await git(checkout, "worktree", "add", "-q", "--detach", worktree, "HEAD");
+    await git(worktree, "commit", "-q", "--allow-empty", "-m", "Add parser");
+    const first = await git(worktree, "rev-parse", "HEAD");
+    await git(worktree, "commit", "-q", "--allow-empty", "-m", "Fix parser edge", "-m", "Tabs.");
+    await git(worktree, "push", "-q", "origin", "HEAD:refs/heads/feature/detached_work");
+    await git(worktree, "remote", "set-url", "origin", "git@github.com:example/fixture.git");
+
+    expect(
+      await createDraftPullRequest(deps, worktree, "feature/detached_work", "main", base),
+    ).toBe("https://github.com/example/fixture/pull/3");
+    await git(worktree, "remote", "set-url", "origin", "git@gitlab.com:example/fixture.git");
+    expect(
+      await createDraftPullRequest(deps, worktree, "feature/detached_work", undefined, first),
+    ).toBe("https://gitlab.com/example/fixture/-/merge_requests/4");
+
+    expect(forgeCalls).toEqual([
+      [
+        "gh",
+        "pr",
+        "create",
+        "--draft",
+        "--title",
+        "feature/detached work",
+        "--body",
+        "- Add parser\n- Fix parser edge",
+        "--head",
+        "feature/detached_work",
+        "--base",
+        "main",
+      ],
+      [
+        "glab",
+        "mr",
+        "create",
+        "--draft",
+        "--title",
+        "Fix parser edge",
+        "--description",
+        "Tabs.",
+        "--yes",
+        "--source-branch",
+        "feature/detached_work",
+      ],
+    ]);
+    // No local branch is created, so worktree cleanup and the registered checkout are unaffected.
+    expect(await git(worktree, "branch", "--list", "feature/*")).toBe("");
   });
 });

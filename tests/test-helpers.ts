@@ -103,6 +103,8 @@ export class FakeExec {
   /** glab mr create stdout as a terminal shows it, with the URL on an indented last line. */
   mrOutput =
     "!7 Draft: Work (feature/opened)\n https://gitlab.com/nikolauska/orchestrator/-/merge_requests/7\n";
+  /** `git log` of the worker's commits in the `%s%x1f%b%x1e` shape draft requests are built from. */
+  commitLog = "Implement work\x1fWhy it matters\n\x1e";
   projectHead = "base";
   projectBranch = "main";
   projectDirty = false;
@@ -303,6 +305,7 @@ export class FakeExec {
       return this.#ok();
     }
     if (sub[0] === "push") return this.#ok();
+    if (sub[0] === "log") return this.#ok(this.commitLog);
     if (sub[0] === "remote" && sub[1] === "get-url") return this.#ok(this.originUrl);
     return this.#fail(`unexpected git -C: ${sub.join(" ")}`);
   }

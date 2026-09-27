@@ -210,18 +210,24 @@ export async function originLag(
 export type Forge = {
   cli: "gh" | "glab";
   label: string;
-  args(head: string, base: string | undefined): string[];
+  args(head: string, base: string | undefined, summary: Summary): string[];
   url: RegExp;
 };
+
+/** The title and description of a draft review request. */
+type Summary = { title: string; body: string };
 
 const GITHUB: Forge = {
   cli: "gh",
   label: "pull request",
-  args: (head, base) => [
+  args: (head, base, summary) => [
     "pr",
     "create",
     "--draft",
-    "--fill",
+    "--title",
+    summary.title,
+    "--body",
+    summary.body,
     "--head",
     head,
     ...(base ? ["--base", base] : []),
@@ -234,11 +240,14 @@ const GITLAB: Forge = {
   label: "merge request",
   // --yes skips the submit confirmation that would otherwise wait on an unattended run. Without a
   // target branch GitLab uses the project default, matching gh without --base.
-  args: (head, base) => [
+  args: (head, base, summary) => [
     "mr",
     "create",
     "--draft",
-    "--fill",
+    "--title",
+    summary.title,
+    "--description",
+    summary.body,
     "--yes",
     "--source-branch",
     head,
@@ -246,6 +255,46 @@ const GITLAB: Forge = {
   ],
   url: /https?:\/\/\S+\/-\/merge_requests\/\d+/g,
 };
+
+/**
+ * Builds the request text the way `--fill` does in both CLIs: one commit supplies its subject and
+ * body; several become the humanized branch name and a list of their subjects, oldest first.
+ *
+ * `--fill` cannot be used because worker worktrees stay on a detached HEAD and pushHead only
+ * creates the branch on the remote. Both CLIs resolve the bare branch name locally
+ * (`git log origin/<base>...<branch>`), which fails with "ambiguous argument", and glab's --fill
+ * also re-pushes that missing local branch. Reading the worker's own commits since its delivery
+ * base needs no local branch, and avoids creating one in the refs Treehouse worktrees share with
+ * the registered checkout.
+ */
+async function commitSummary(
+  deps: RuntimeDeps,
+  directory: string,
+  head: string,
+  since: string,
+  signal?: AbortSignal,
+): Promise<Summary> {
+  const log = await at(
+    deps,
+    directory,
+    ["log", "--reverse", "--format=%s%x1f%b%x1e", `${since}..HEAD`],
+    signal,
+  );
+  const commits = log
+    .split("\x1e")
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .map((entry) => {
+      const [subject = "", body = ""] = entry.split("\x1f");
+      return { title: subject.trim(), body: body.trim() };
+    });
+  const [only] = commits;
+  if (only && commits.length === 1) return only;
+  return {
+    title: head.replace(/[-_]/g, " "),
+    body: commits.map((commit) => `- ${commit.title}`).join("\n"),
+  };
+}
 
 /** Returns the lowercase host of an SSH, scp-like, or HTTP(S) Git remote URL. */
 function remoteHost(url: string): string | undefined {
@@ -283,17 +332,20 @@ export async function originForge(
 
 /**
  * Opens a draft pull request (GitHub) or merge request (GitLab) for an already pushed branch and
- * returns its web URL.
+ * returns its web URL. `since` is the commit the worker started from, so the request describes
+ * only the worker's own commits.
  */
 export async function createDraftPullRequest(
   deps: RuntimeDeps,
   directory: string,
   head: string,
   base: string | undefined,
+  since: string,
   signal?: AbortSignal,
 ): Promise<string> {
   const forge = await originForge(deps, directory, signal);
-  const output = await execCommand(deps, forge.cli, forge.args(head, base), {
+  const summary = await commitSummary(deps, directory, head, since, signal);
+  const output = await execCommand(deps, forge.cli, forge.args(head, base, summary), {
     cwd: directory,
     signal,
   });
