@@ -14,37 +14,6 @@ import {
 } from "./test-helpers";
 
 afterEach(cleanup);
-describe("worker prompts", () => {
-  test("adds ponytail guidance only to implementation workers", async () => {
-    const { root, project } = await fixtureRoot();
-    const fake = new FakeExec(project);
-    const instance = runtime(root, fake, []);
-    await register(instance, project);
-
-    const result = await instance.runTask({
-      project: "fixture",
-      context: "",
-      tasks: [
-        { kind: "implementation", name: "implement", task: "Change" },
-        { kind: "scout", name: "scout", task: "Investigate" },
-      ],
-    });
-
-    expect(result.isError).toBeUndefined();
-    const promptFor = (pane: string) => {
-      const call = fake.calls.find(
-        (call) =>
-          call.command === "herdr" &&
-          call.args.includes("prompt") &&
-          call.args[call.args.indexOf("prompt") + 1] === pane,
-      );
-      return call?.args[call.args.indexOf("prompt") + 2] ?? "";
-    };
-    expect(promptFor("pane:implement")).toContain("Use the ponytail skill for this assignment.");
-    expect(promptFor("pane:scout")).not.toContain("ponytail");
-  });
-});
-
 describe("scout reports", () => {
   test("launches from dirty detached HEAD and discloses excluded local changes", async () => {
     const { root, project } = await fixtureRoot();
@@ -302,7 +271,6 @@ describe("project-independent scouts", () => {
       "exact committed revision",
       "local changes are excluded",
       "disposable worktree",
-      "ponytail",
     ])
       expect(prompt).not.toContain(excluded);
   });
