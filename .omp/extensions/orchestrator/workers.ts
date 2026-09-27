@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { lstat, readFile, rm } from "node:fs/promises";
 import {
   abortRebaseBestEffort,
-  createDraftPullRequest,
   currentBranchAt,
   fastForward,
   headAt,
@@ -134,7 +133,6 @@ export function publicRecord(record: WorkerRecord): Record<string, unknown> {
     ...(record.start_from ? { start_from: record.start_from } : {}),
     ...(record.push_to ? { push_to: record.push_to } : {}),
     ...(record.hold ? { hold: true } : {}),
-    ...(record.pr ? { pr: true } : {}),
     ...(record.report_path
       ? {
           report_path: record.report_path,
@@ -776,23 +774,7 @@ async function pushWorker(
   output: string,
 ): Promise<Record<string, unknown>> {
   await pushHead(state.deps, record.worktree!, record.push_to!);
-  if (!record.pr) return terminal(record, "pushed", output, { branch: record.push_to });
-  try {
-    const url = await createDraftPullRequest(
-      state.deps,
-      record.worktree!,
-      record.push_to!,
-      record.start_from,
-      record.delivery_base!,
-    );
-    return terminal(record, "pushed", output, { branch: record.push_to, pr_url: url });
-  } catch (error) {
-    // The branch is already pushed, so the work is delivered; the PR or MR can still be opened by hand.
-    return terminal(record, "pushed", output, {
-      branch: record.push_to,
-      pr_error: errorMessage(error),
-    });
-  }
+  return terminal(record, "pushed", output, { branch: record.push_to });
 }
 
 function queueLocal(

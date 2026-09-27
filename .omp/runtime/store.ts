@@ -33,7 +33,6 @@ const FIELDS: ReadonlyArray<
   ["start_from", "start_from", false],
   ["push_to", "push_to", false],
   ["hold", "hold", false, true],
-  ["pr", "pr", false, true],
   ["report_path", "report_path", false],
   ["local_changes", "local_changes", false],
   ["prompt", "prompt", false],

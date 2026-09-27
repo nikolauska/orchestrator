@@ -44,7 +44,7 @@ Closing an implementation worker is refused when it has uncommitted changes or c
 
 ## Completion and recovery
 
-A successful implementation is reported as merged locally, pushed to a requested remote branch, or completed with no changes. A push that also asked for a pull request (GitHub) or merge request (GitLab) reports the draft request's link, or why it could not be opened; the branch is pushed either way.
+A successful implementation is reported as merged locally, pushed to a requested remote branch, or completed with no changes.
 
 A successful scout is reported as **Completed with report**. Its durable report remains available after completion.
 

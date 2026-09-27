@@ -96,15 +96,6 @@ export class FakeExec {
   modelRoles: Record<string, string> = {};
   readonly remoteHeads = new Map<string, string>();
   readonly knownCommits = new Set<string>();
-  prUrl = "https://github.com/example/fixture/pull/1";
-  prFails = false;
-  /** `git remote get-url origin`; decides whether gh or glab opens the draft request. */
-  originUrl = "git@github.com:example/fixture.git";
-  /** glab mr create stdout as a terminal shows it, with the URL on an indented last line. */
-  mrOutput =
-    "!7 Draft: Work (feature/opened)\n https://gitlab.com/nikolauska/orchestrator/-/merge_requests/7\n";
-  /** `git log` of the worker's commits in the `%s%x1f%b%x1e` shape draft requests are built from. */
-  commitLog = "Implement work\x1fWhy it matters\n\x1e";
   projectHead = "base";
   projectBranch = "main";
   projectDirty = false;
@@ -157,12 +148,6 @@ export class FakeExec {
     }
     if (command === "herdr" && args.includes("agent") && args.includes("read"))
       return this.#ok(this.screens.get(args[args.indexOf("read") + 1]) ?? "");
-    if (command === "gh" && args[0] === "pr")
-      return this.prFails
-        ? this.#fail("gh: not authenticated")
-        : this.#ok(`Creating\n${this.prUrl}`);
-    if (command === "glab" && args[0] === "mr")
-      return this.prFails ? this.#fail("glab: not authenticated") : this.#ok(this.mrOutput);
     if (command === "herdr" && args.includes("agent") && args.includes("prompt")) {
       const pane = args[args.indexOf("prompt") + 1];
       if (this.promptStallsOnce && !this.#reportedPromptStall) {
@@ -305,8 +290,6 @@ export class FakeExec {
       return this.#ok();
     }
     if (sub[0] === "push") return this.#ok();
-    if (sub[0] === "log") return this.#ok(this.commitLog);
-    if (sub[0] === "remote" && sub[1] === "get-url") return this.#ok(this.originUrl);
     return this.#fail(`unexpected git -C: ${sub.join(" ")}`);
   }
 

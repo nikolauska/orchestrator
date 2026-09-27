@@ -13,7 +13,7 @@ A task may select an existing local branch as its starting point. This lets work
 
 Workers run in visible Herdr spaces. Each project worker gets its own space, shown nested under the project's space. A project space that Orchestrator creates is named after the registered project; a space you already had for that repository keeps its name. Worker names show their kind, such as `impl·fix-login` or `scout·audit-auth`. A request can start multiple independent assignments together, with a maximum of 32 workers.
 
-Implementation work is delivered locally by default: a successful committed change advances the registered project's current branch. A task that starts from a selected branch can be delivered locally only when that branch is currently checked out; otherwise it can use a named remote delivery branch. A task that pushes to a remote branch can also open a draft pull request (GitHub) or merge request (GitLab), depending on where the project's origin remote is hosted; other hosts are not supported. A task can instead be held for review, stopping at ready until it is landed with the Workers tool.
+Implementation work is delivered locally by default: a successful committed change advances the registered project's current branch. A task that starts from a selected branch can be delivered locally only when that branch is currently checked out; otherwise it can use a named remote delivery branch. A task can instead be held for review, stopping at ready until it is landed with the Workers tool.
 
 ## Project research
 

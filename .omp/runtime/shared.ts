@@ -33,7 +33,6 @@ export type TaskItem = {
   pushTo?: string;
   startFrom?: string;
   hold?: boolean;
-  pr?: boolean;
 };
 export type ProjectTaskParams = { project: string; context: string; tasks: TaskItem[] };
 export type IndependentTaskParams = { scope: "independent"; context: string; tasks: TaskItem[] };
@@ -85,7 +84,6 @@ export type WorkerRecord = {
   start_from?: string;
   push_to?: string;
   hold?: boolean;
-  pr?: boolean;
   report_path?: string;
   local_changes?: string;
   prompt?: string;

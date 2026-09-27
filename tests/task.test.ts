@@ -411,22 +411,20 @@ describe("launch options", () => {
     ).toBe(false);
   });
 
-  test("rejects hold and pr where they cannot apply", async () => {
+  test("rejects hold on scouts", async () => {
     const { root, project } = await fixtureRoot();
     const fake = new FakeExec(project);
     const instance = runtime(root, fake, []);
     await register(instance, project);
-    for (const [item, expected] of [
-      [{ kind: "scout" as const, name: "held", task: "work", hold: true }, "Only implementation"],
-      [
-        { kind: "implementation" as const, name: "local-pr", task: "work", pr: true },
-        "requires pushTo",
-      ],
-    ] as const) {
-      const result = await instance.runTask({ project: "fixture", context: "", tasks: [item] });
-      expect(result.isError).toBe(true);
-      expect(result.content[0]!.type === "text" && result.content[0]!.text).toContain(expected);
-    }
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "scout", name: "held", task: "work", hold: true }],
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0]!.type === "text" && result.content[0]!.text).toContain(
+      "Only implementation",
+    );
     expect(fake.calls.some((call) => call.command === "treehouse")).toBe(false);
   });
 });

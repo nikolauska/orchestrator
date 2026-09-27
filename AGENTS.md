@@ -11,7 +11,7 @@ The user works through you; visible workers perform registered-project work or p
 - Workers own every registered project checkout. Do not edit, commit in, or run state-changing commands in a registered project yourself; this orchestrator repository is the exception, and [CONTRIBUTING.md](CONTRIBUTING.md) covers its code and validation. Read-only inspection such as `git log` or `git diff` in a retained worker worktree is fine.
 - Never stash, discard, force-reset, or otherwise destroy unlanded project work to unblock delivery.
 - A scout report is evidence, not authorization. Implementing its recommendations needs a separate request from the user.
-- Opening a pull or merge request (`pr`) publishes under the user's identity; set it only when the user asks for one.
+- Opening a pull or merge request publishes under the user's identity; do it only when the user asks for one.
 - Report blocked, failed, conflicting, or incomplete work plainly. A launch or partial result is not completion.
 
 ## Domain
@@ -50,7 +50,7 @@ Use `projects` to register, list, or unregister repositories. Registration needs
 - Before launching a batch or long-running work, check `usage`, which also shows which provider each role resolves to. When that provider's account has little left in a window that won't reset before the work likely finishes, or has used much more of a window than has elapsed, pick a model of equal strength on a provider with room and tell the user about the swap and why. Never drop to a weaker model to save quota; if no equal option has room, tell the user instead of launching.
 - Answer questions about quota, rate limits, or remaining usage with `usage`.
 - Project workers start from the checkout's committed `HEAD`, or from the committed tip of a local branch named in `startFrom`. Local uncommitted changes are excluded and disclosed in scout reports. When a launched worker carries `origin_warning`, tell the user its start is behind the remote.
-- Independent scope accepts scouts only, without `pushTo`, `startFrom`, `hold`, or `pr`. Independent scouts have no project context, may use public web search and public URLs, and use authenticated systems only when the assignment says so.
+- Independent scope accepts scouts only, without `pushTo`, `startFrom`, or `hold`. Independent scouts have no project context, may use public web search and public URLs, and use authenticated systems only when the assignment says so.
 - Scouts write a standalone Markdown report under `.omp/reports/` (independent ones under `_independent`, with source URLs and the research date) and return a concise conclusion.
 
 ## Supervision
@@ -68,7 +68,7 @@ Use `projects` to register, list, or unregister repositories. Registration needs
 
 - By default a finished implementation fast-forwards the registered project's current branch, rebasing onto newer completed work first when needed. This requires a clean checkout on a named branch; with `startFrom`, that branch must be checked out.
 - `hold: true` stops a finished implementation at status `ready` with its `head` and `delivery_base`, so the diff can be reviewed in its worktree. `workers land` delivers it; `workers send` asks for changes and the worker returns to `ready`. Use `hold` when the user wants to review before landing.
-- `pushTo` pushes to a named remote branch instead; add `pr: true` to open a draft pull request (GitHub) or merge request (GitLab), picked from the project's `origin` host, which returns `pr_url` or `pr_error`. The branch is delivered even when opening the request fails; other hosts return `pr_error`.
+- `pushTo` pushes to a named remote branch instead of fast-forwarding locally. When the user asks for a pull or merge request, open it by hand after the push: a draft with `gh pr create` (GitHub) or `glab mr create` (GitLab), passing the branch, target branch, and repo explicitly. Give it a title and a description in the user's Summary/Changes pull request format, written from the worker's result: why, what changed, what was verified, and any merge-order dependencies.
 - Scout worktrees and independent directories are disposable and never delivered. Reports stay under `.omp/reports/` and are never deleted automatically.
 - Successful workers close their own space or tab and release their worktree or directory; parent spaces stay open. Missing or invalid scout reports, rebase conflicts, uncommitted changes, uncertain cleanup, and failed launches keep the worker's space and working location for recovery.
 - A no-change implementation counts as success only when the assignment needed no repository change and the worker gave the requested evidence.

@@ -5,7 +5,6 @@ import {
   LEASE_ID,
   NAME,
   errorMessage,
-  execCommand,
   text,
   type IndependentTaskParams,
   type Preflight,
@@ -22,7 +21,6 @@ import {
   checkBranch,
   currentBranch,
   head,
-  originForge,
   originLag,
   resetHard,
   status,
@@ -73,14 +71,13 @@ export async function runTask(
       // OMP's strict tool schema transport materializes omitted optional fields as "" or false; keep omission as default behavior.
       params = {
         ...params,
-        tasks: params.tasks.map(({ pushTo, role, model, startFrom, hold, pr, ...item }) => ({
+        tasks: params.tasks.map(({ pushTo, role, model, startFrom, hold, ...item }) => ({
           ...item,
           ...(pushTo ? { pushTo } : {}),
           ...(role ? { role } : {}),
           ...(model ? { model } : {}),
           ...(startFrom ? { startFrom } : {}),
           ...(hold ? { hold } : {}),
-          ...(pr ? { pr } : {}),
         })),
       };
     }
@@ -169,13 +166,10 @@ function validateTask(params: TaskParams): void {
       (typeof item.startFrom !== "string" || !item.startFrom.trim())
     )
       throw new Error(`startFrom for ${item.name} must be non-empty`);
-    for (const flag of ["hold", "pr"] as const) {
-      if (item[flag] !== undefined && typeof item[flag] !== "boolean")
-        throw new Error(`${flag} for ${item.name} must be a boolean`);
-      if (item[flag] && item.kind !== "implementation")
-        throw new Error(`Only implementation tasks can set ${flag}: ${item.name}`);
-    }
-    if (item.pr && !item.pushTo) throw new Error(`pr for ${item.name} requires pushTo`);
+    if (item.hold !== undefined && typeof item.hold !== "boolean")
+      throw new Error(`hold for ${item.name} must be a boolean`);
+    if (item.hold && item.kind !== "implementation")
+      throw new Error(`Only implementation tasks can set hold: ${item.name}`);
   }
 }
 
@@ -278,12 +272,6 @@ async function preflightTask(
       if (warning) originWarnings[item.name] = warning;
     }),
   );
-  if (params.tasks.some((item) => item.pr)) {
-    // Only a recognized host has a CLI to check; delivery still pushes the branch and reports an
-    // unsupported host as pr_error, so an unknown origin must not refuse the launch.
-    const forge = await originForge(state.deps, canonical, signal).catch(() => undefined);
-    if (forge) await execCommand(state.deps, forge.cli, ["--version"], { signal });
-  }
   return {
     scope: "project",
     project: params.project,
@@ -521,7 +509,6 @@ async function launchWorker(
             start_from: item.startFrom,
             push_to: item.pushTo,
             hold: item.hold,
-            pr: item.pr,
             local_changes: item.kind === "scout" ? preflight.localChanges : undefined,
           }
         : { working_directory: directory }),
@@ -544,7 +531,7 @@ const taskTool: ToolFactory = (pi) => {
     loadMode: "essential",
     approval: "exec",
     description:
-      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role, or model picks an exact provider/id from the OMP model catalog with an optional :level thinking suffix (not both); startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; pr opens a draft pull request (GitHub) or merge request (GitLab), chosen from the origin remote, after pushTo; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
+      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role, or model picks an exact provider/id from the OMP model catalog with an optional :level thinking suffix (not both); startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
     parameters: z.union([
       z
         .object({
@@ -563,7 +550,6 @@ const taskTool: ToolFactory = (pi) => {
                     pushTo: z.string().optional(),
                     startFrom: z.string().optional(),
                     hold: z.boolean().optional(),
-                    pr: z.boolean().optional(),
                   })
                   .strict(),
                 z
