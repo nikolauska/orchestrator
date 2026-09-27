@@ -56,7 +56,7 @@ Orchestrator chooses the appropriate worker and scope from your request. Indepen
 
 ## Delivery and recovery
 
-Project implementation workers commit before completion. Successful work fast-forwards the registered project's current branch by default. A task may instead push to a named remote branch, optionally opening a draft pull request (requires an authenticated `gh`), or be held for review until you ask Orchestrator to land it. A launch warns when a worker starts from a branch that is behind its remote.
+Project implementation workers commit before completion. Successful work fast-forwards the registered project's current branch by default. A task may instead push to a named remote branch, optionally opening a draft pull request (GitHub, requires an authenticated `gh`) or merge request (GitLab, requires an authenticated `glab`) on the host of the project's `origin` remote, or be held for review until you ask Orchestrator to land it. A launch warns when a worker starts from a branch that is behind its remote.
 
 Orchestrator does not discard uncertain work. A dirty checkout, conflict, failed launch, blocked worker, uncommitted implementation change, or unresolved scout-report cleanup retains the relevant worker space and working location for recovery. Closing a worker that still has undelivered work is refused unless you explicitly ask to discard it.
 

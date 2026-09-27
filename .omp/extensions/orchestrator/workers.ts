@@ -786,7 +786,7 @@ async function pushWorker(
     );
     return terminal(record, "pushed", output, { branch: record.push_to, pr_url: url });
   } catch (error) {
-    // The branch is already pushed, so the work is delivered; the PR can still be opened by hand.
+    // The branch is already pushed, so the work is delivered; the PR or MR can still be opened by hand.
     return terminal(record, "pushed", output, {
       branch: record.push_to,
       pr_error: errorMessage(error),

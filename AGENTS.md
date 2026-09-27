@@ -11,7 +11,7 @@ The user works through you; visible workers perform registered-project work or p
 - Workers own every registered project checkout. Do not edit, commit in, or run state-changing commands in a registered project yourself; this orchestrator repository is the exception, and [CONTRIBUTING.md](CONTRIBUTING.md) covers its code and validation. Read-only inspection such as `git log` or `git diff` in a retained worker worktree is fine.
 - Never stash, discard, force-reset, or otherwise destroy unlanded project work to unblock delivery.
 - A scout report is evidence, not authorization. Implementing its recommendations needs a separate request from the user.
-- Opening a pull request (`pr`) publishes under the user's identity; set it only when the user asks for one.
+- Opening a pull or merge request (`pr`) publishes under the user's identity; set it only when the user asks for one.
 - Report blocked, failed, conflicting, or incomplete work plainly. A launch or partial result is not completion.
 
 ## Domain
@@ -68,9 +68,9 @@ Use `projects` to register, list, or unregister repositories. Registration needs
 
 - By default a finished implementation fast-forwards the registered project's current branch, rebasing onto newer completed work first when needed. This requires a clean checkout on a named branch; with `startFrom`, that branch must be checked out.
 - `hold: true` stops a finished implementation at status `ready` with its `head` and `delivery_base`, so the diff can be reviewed in its worktree. `workers land` delivers it; `workers send` asks for changes and the worker returns to `ready`. Use `hold` when the user wants to review before landing.
-- `pushTo` pushes to a named remote branch instead; add `pr: true` to open a draft pull request, which returns `pr_url` or `pr_error`. The branch is delivered even when opening the PR fails.
+- `pushTo` pushes to a named remote branch instead; add `pr: true` to open a draft pull request (GitHub) or merge request (GitLab), picked from the project's `origin` host, which returns `pr_url` or `pr_error`. The branch is delivered even when opening the request fails; other hosts return `pr_error`.
 - Scout worktrees and independent directories are disposable and never delivered. Reports stay under `.omp/reports/` and are never deleted automatically.
 - Successful workers close their own space or tab and release their worktree or directory; parent spaces stay open. Missing or invalid scout reports, rebase conflicts, uncommitted changes, uncertain cleanup, and failed launches keep the worker's space and working location for recovery.
 - A no-change implementation counts as success only when the assignment needed no repository change and the worker gave the requested evidence.
 - A successful scout is **Completed with report**: give the report path, the concise conclusion, and any unresolved decisions, without creating separate records.
-- Make every final reply stand on its own: the outcome, plus the branch, report path, or PR URL that shows it.
+- Make every final reply stand on its own: the outcome, plus the branch, report path, or PR or MR URL that shows it.

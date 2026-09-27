@@ -206,7 +206,85 @@ export async function originLag(
   }
 }
 
-/** Opens a draft pull request for an already pushed branch and returns its URL. */
+/** The hosting CLI that opens draft review requests, and how its output names the new request. */
+export type Forge = {
+  cli: "gh" | "glab";
+  label: string;
+  args(head: string, base: string | undefined): string[];
+  url: RegExp;
+};
+
+const GITHUB: Forge = {
+  cli: "gh",
+  label: "pull request",
+  args: (head, base) => [
+    "pr",
+    "create",
+    "--draft",
+    "--fill",
+    "--head",
+    head,
+    ...(base ? ["--base", base] : []),
+  ],
+  url: /https?:\/\/\S+\/pull\/\d+/g,
+};
+
+const GITLAB: Forge = {
+  cli: "glab",
+  label: "merge request",
+  // --yes skips the submit confirmation that would otherwise wait on an unattended run. Without a
+  // target branch GitLab uses the project default, matching gh without --base.
+  args: (head, base) => [
+    "mr",
+    "create",
+    "--draft",
+    "--fill",
+    "--yes",
+    "--source-branch",
+    head,
+    ...(base ? ["--target-branch", base] : []),
+  ],
+  url: /https?:\/\/\S+\/-\/merge_requests\/\d+/g,
+};
+
+/** Returns the lowercase host of an SSH, scp-like, or HTTP(S) Git remote URL. */
+function remoteHost(url: string): string | undefined {
+  // scp-like remotes (`git@host:group/repo.git`) have no scheme, so URL cannot parse them.
+  const scpHost = /^(?:[^@/:]+@)?([^/:]+):(?!\/)/.exec(url)?.[1];
+  if (scpHost) return scpHost.toLowerCase();
+  try {
+    return new URL(url).hostname.toLowerCase() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Picks the forge from `origin`, because pushHead delivers the branch there and the review
+ * request must be opened on the host that received it. Unknown hosts fail instead of guessing a
+ * CLI that would target the wrong service.
+ */
+export async function originForge(
+  deps: RuntimeDeps,
+  directory: string,
+  signal?: AbortSignal,
+): Promise<Forge> {
+  const url = await at(deps, directory, ["remote", "get-url", "origin"], signal);
+  const host = remoteHost(url);
+  if (host === "github.com") return GITHUB;
+  // Self-hosted GitLab instances conventionally carry "gitlab" in their host name.
+  if (host?.includes("gitlab")) return GITLAB;
+  throw new Error(
+    host
+      ? `Unsupported origin host ${host}: draft requests can be opened only on GitHub (github.com) or GitLab`
+      : `Unsupported origin remote ${url}: draft requests need a GitHub or GitLab host`,
+  );
+}
+
+/**
+ * Opens a draft pull request (GitHub) or merge request (GitLab) for an already pushed branch and
+ * returns its web URL.
+ */
 export async function createDraftPullRequest(
   deps: RuntimeDeps,
   directory: string,
@@ -214,11 +292,17 @@ export async function createDraftPullRequest(
   base: string | undefined,
   signal?: AbortSignal,
 ): Promise<string> {
-  const output = await execCommand(
-    deps,
-    "gh",
-    ["pr", "create", "--draft", "--fill", "--head", head, ...(base ? ["--base", base] : [])],
-    { cwd: directory, signal },
-  );
-  return output.split("\n").at(-1)!.trim();
+  const forge = await originForge(deps, directory, signal);
+  const output = await execCommand(deps, forge.cli, forge.args(head, base), {
+    cwd: directory,
+    signal,
+  });
+  // glab prints a summary around the URL on a terminal; returning any other line would hand back
+  // a link that is not the request.
+  const url = output.match(forge.url)?.at(-1);
+  if (!url)
+    throw new Error(
+      `${forge.cli} reported no draft ${forge.label} URL: ${output.trim() || "(no output)"}`,
+    );
+  return url;
 }

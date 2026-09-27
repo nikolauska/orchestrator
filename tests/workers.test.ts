@@ -954,4 +954,115 @@ describe("delivery options", () => {
     );
     expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
   });
+
+  test("opens a draft GitLab merge request with glab when origin is on GitLab", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const instance = runtime(root, fake, messages);
+    await register(instance, project);
+    fake.branchHeads.set("release", "release123");
+    const cases = [
+      { name: "ssh", origin: "git@gitlab.com:nikolauska/orchestrator.git", startFrom: "release" },
+      {
+        name: "https",
+        origin: "https://gitlab.com/nikolauska/orchestrator.git",
+        startFrom: undefined,
+      },
+      {
+        name: "hosted",
+        origin: "ssh://git@gitlab.example.com:2222/group/repo.git",
+        startFrom: undefined,
+      },
+    ];
+    for (const [index, item] of cases.entries()) {
+      fake.originUrl = item.origin;
+      await instance.runTask({
+        project: "fixture",
+        context: "",
+        tasks: [
+          {
+            kind: "implementation",
+            name: item.name,
+            task: "work",
+            pushTo: `feature/${item.name}`,
+            ...(item.startFrom ? { startFrom: item.startFrom } : {}),
+            pr: true,
+          },
+        ],
+      });
+      fake.settle(item.name);
+      await eventually(() =>
+        expect(parsed(messages)[index]).toMatchObject({
+          name: item.name,
+          status: "pushed",
+          branch: `feature/${item.name}`,
+          pr_url: "https://gitlab.com/nikolauska/orchestrator/-/merge_requests/7",
+        }),
+      );
+    }
+    const creates = fake.calls.filter((call) => call.command === "glab" && call.args[0] === "mr");
+    expect(creates.map((call) => call.args)).toEqual([
+      [
+        "mr",
+        "create",
+        "--draft",
+        "--fill",
+        "--yes",
+        "--source-branch",
+        "feature/ssh",
+        "--target-branch",
+        "release",
+      ],
+      ["mr", "create", "--draft", "--fill", "--yes", "--source-branch", "feature/https"],
+      ["mr", "create", "--draft", "--fill", "--yes", "--source-branch", "feature/hosted"],
+    ]);
+    expect(creates.every((call) => call.cwd?.includes(".treehouse-"))).toBe(true);
+    expect(
+      fake.calls.filter((call) => call.command === "glab" && call.args[0] === "--version"),
+    ).toHaveLength(3);
+    expect(fake.calls.some((call) => call.command === "gh")).toBe(false);
+  });
+
+  test("reports unsupported origin hosts and URL-less glab output as pr_error", async () => {
+    const { root, project } = await fixtureRoot();
+    const fake = new FakeExec(project);
+    const messages: Array<{ message: string; options: unknown }> = [];
+    const instance = runtime(root, fake, messages);
+    await register(instance, project);
+    fake.originUrl = "git@bitbucket.org:team/repo.git";
+    await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "implementation", name: "elsewhere", task: "work", pushTo: "f/a", pr: true }],
+    });
+    fake.settle("elsewhere");
+    await eventually(() =>
+      expect(parsed(messages)[0]).toMatchObject({
+        name: "elsewhere",
+        status: "pushed",
+        branch: "f/a",
+        pr_error: expect.stringContaining("bitbucket.org"),
+      }),
+    );
+    expect(fake.calls.some((call) => call.command === "gh" || call.command === "glab")).toBe(false);
+
+    fake.originUrl = "git@gitlab.com:nikolauska/orchestrator.git";
+    fake.mrOutput = "!7 Draft: Work (f/b)\n";
+    await instance.runTask({
+      project: "fixture",
+      context: "",
+      tasks: [{ kind: "implementation", name: "urlless", task: "work", pushTo: "f/b", pr: true }],
+    });
+    fake.settle("urlless");
+    await eventually(() =>
+      expect(parsed(messages)[1]).toMatchObject({
+        name: "urlless",
+        status: "pushed",
+        branch: "f/b",
+        pr_error: expect.stringContaining("no draft merge request URL"),
+      }),
+    );
+    expect(parsed(messages)[1]).not.toHaveProperty("pr_url");
+  });
 });

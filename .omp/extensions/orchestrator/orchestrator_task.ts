@@ -22,6 +22,7 @@ import {
   checkBranch,
   currentBranch,
   head,
+  originForge,
   originLag,
   resetHard,
   status,
@@ -277,8 +278,12 @@ async function preflightTask(
       if (warning) originWarnings[item.name] = warning;
     }),
   );
-  if (params.tasks.some((item) => item.pr))
-    await execCommand(state.deps, "gh", ["--version"], { signal });
+  if (params.tasks.some((item) => item.pr)) {
+    // Only a recognized host has a CLI to check; delivery still pushes the branch and reports an
+    // unsupported host as pr_error, so an unknown origin must not refuse the launch.
+    const forge = await originForge(state.deps, canonical, signal).catch(() => undefined);
+    if (forge) await execCommand(state.deps, forge.cli, ["--version"], { signal });
+  }
   return {
     scope: "project",
     project: params.project,
@@ -539,7 +544,7 @@ const taskTool: ToolFactory = (pi) => {
     loadMode: "essential",
     approval: "exec",
     description:
-      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role, or model picks an exact provider/id from the OMP model catalog with an optional :level thinking suffix (not both); startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; pr opens a draft pull request after pushTo; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
+      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role, or model picks an exact provider/id from the OMP model catalog with an optional :level thinking suffix (not both); startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; pr opens a draft pull request (GitHub) or merge request (GitLab), chosen from the origin remote, after pushTo; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
     parameters: z.union([
       z
         .object({
