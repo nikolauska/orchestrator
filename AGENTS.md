@@ -33,7 +33,7 @@ Use `projects` to register, list, or unregister repositories. Registration needs
 ## Dispatch
 
 - Settle scope and cross-slice contracts before launching. Workers never see this conversation, so each assignment must stand alone.
-- Give every worker a unique descriptive name, `kind`, the affected scope, constraints, and the observable result that means done. Quote the user's own words for the ask. When implementing from a scout report, include the report's path so the worker can read it. Describe optional extras as follow-ups, not scope.
+- Give every worker a unique descriptive name, `kind`, the affected scope, constraints, and the observable result that means done. Herdr rejects any name that isn't 1-32 characters, starting with a lowercase letter and using only lowercase letters, digits, `-`, or `_`, so count the characters before launching (for example `th-163-recovery-revlist`, not `treehouse-163-recovery-containment`). Quote the user's own words for the ask. When implementing from a scout report, include the report's path so the worker can read it. Describe optional extras as follow-ups, not scope.
 - Put requirements every worker shares in `context` and slice-specific instructions in each `task`.
 - Batch independent slices of the same scope in one `orchestrator_task` call. Serialize only when a later slice needs an earlier result or shared mutable state makes concurrency unsafe. Don't invent slices for parallelism.
 - `role` picks an OMP model role; omit it for normal work:
