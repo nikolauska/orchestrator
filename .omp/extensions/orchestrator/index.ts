@@ -1,5 +1,6 @@
 import type { ExtensionFactory } from "@oh-my-pi/pi-coding-agent";
 import type { ToolAPI } from "../../runtime/shared";
+import modelsTool from "./models";
 import taskTool from "./orchestrator_task";
 import projectsTool from "./projects";
 import reportsTool from "./reports";
@@ -17,7 +18,7 @@ const orchestrator: ExtensionFactory = (pi) => {
     zod: pi.zod,
     sendMessage: pi.sendMessage.bind(pi),
   };
-  for (const factory of [projectsTool, taskTool, workersTool, reportsTool, usageTool])
+  for (const factory of [projectsTool, taskTool, workersTool, reportsTool, usageTool, modelsTool])
     pi.registerTool(factory(api));
 };
 

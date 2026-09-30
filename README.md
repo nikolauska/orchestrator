@@ -50,6 +50,8 @@ herdr integration install omp
 
    > How much Claude usage is left this week?
 
+   > From now on, use `openai-codex/gpt-5.6:xhigh` for reviews.
+
    > Run the audit on `openai-codex/gpt-5.5:high`.
 
 Orchestrator chooses the appropriate worker and scope from your request. Independent research runs outside registered projects in a separate disposable directory; authenticated external access requires explicit instructions.
@@ -66,7 +68,7 @@ Workers start with the settings overlay in [`.omp/worker-config.yml`](.omp/worke
 
 ## Models and usage
 
-Each worker runs on an OMP model role or on an exact model from `omp models`, optionally with a thinking level. Before launching larger work, Orchestrator checks provider usage with `omp usage`, which covers every account OMP itself signs in with. When a role's provider is running low, it moves the work to an equally strong model on a provider with room and tells you; it never quietly switches to a weaker model.
+Each worker runs on an OMP model role or on an exact model from `omp models`, optionally with a thinking level. Tell Orchestrator which models you prefer or want avoided, and for what kind of work; it remembers them in `.omp/model-preferences.json`, a local file ignored by Git, and uses them when choosing worker models. A model you name for a specific task still wins. Before launching larger work, Orchestrator checks provider usage with `omp usage`, which covers every account OMP itself signs in with. When a role's provider is running low, it moves the work to an equally strong model on a provider with room and tells you; it never quietly switches to a weaker model.
 
 ## Development
 

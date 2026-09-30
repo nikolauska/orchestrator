@@ -45,6 +45,11 @@ export type WorkersParams =
   | { op: "relaunch"; names: string[]; note: string }
   | { op: "land"; names: string[] }
   | { op: "close"; names: string[]; discard?: boolean };
+export type ModelsParams =
+  | { op: "list"; view?: "preferred" | "all"; provider?: string; q?: string; limit?: number }
+  | { op: "prefer"; model: string; for?: string[]; rank?: number; note?: string }
+  | { op: "avoid"; model: string; note?: string }
+  | { op: "forget"; model: string };
 export type ProjectPreflight = {
   scope: "project";
   project: string;

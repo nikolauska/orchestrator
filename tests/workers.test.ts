@@ -434,6 +434,7 @@ describe("delivery", () => {
     const messages: Array<{ message: string; options: unknown }> = [];
     const { instance, registered } = extensionRuntime(root, fake, messages);
     expect(registered.toSorted()).toEqual([
+      "models",
       "orchestrator_task",
       "projects",
       "reports",

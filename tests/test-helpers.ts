@@ -8,6 +8,7 @@ import orchestratorExtension from "../.omp/extensions/orchestrator";
 import projectsTool from "../.omp/extensions/orchestrator/projects";
 import taskTool from "../.omp/extensions/orchestrator/orchestrator_task";
 import type {
+  ModelsParams,
   ProjectParams,
   TaskParams,
   ToolAPI,
@@ -15,6 +16,7 @@ import type {
   ExecResult,
 } from "../.omp/runtime/shared";
 import workersTool from "../.omp/extensions/orchestrator/workers";
+import modelsTool from "../.omp/extensions/orchestrator/models";
 
 type Call = { command: string; args: string[]; cwd?: string };
 type Waiter = { resolve: () => void; reject: (error: Error) => void };
@@ -44,6 +46,7 @@ export interface ToolHarness {
   runProjects(params: ProjectParams, signal?: AbortSignal): Promise<CustomToolResult>;
   runTask(params: TaskParams, signal?: AbortSignal): Promise<CustomToolResult>;
   runWorkers(params: WorkersParams, signal?: AbortSignal): Promise<CustomToolResult>;
+  runModels(params: ModelsParams, signal?: AbortSignal): Promise<CustomToolResult>;
   dispose(): void;
 }
 
@@ -401,7 +404,12 @@ export function runtime(
     env,
     neutralRoot,
   };
-  return harness([projectsTool(api), taskTool(api), workersTool(api)] as unknown as ToolLike[]);
+  return harness([
+    projectsTool(api),
+    taskTool(api),
+    workersTool(api),
+    modelsTool(api),
+  ] as unknown as ToolLike[]);
 }
 
 // Loads the real extension entry the way OMP does: cwd and Herdr environment come from the process.
@@ -455,6 +463,7 @@ function harness(tools: ToolLike[]): ToolHarness {
     runProjects: (params, signal) => execute("projects", params, signal),
     runTask: (params, signal) => execute("orchestrator_task", params, signal),
     runWorkers: (params, signal) => execute("workers", params, signal),
+    runModels: (params, signal) => execute("models", params, signal),
     dispose: () => {
       void tool("workers").onSession?.({ reason: "shutdown" }, undefined);
     },

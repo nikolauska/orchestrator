@@ -1,4 +1,5 @@
 /.omp/projects.json
+/.omp/model-preferences.json
 /.omp/reports/
 /node_modules/
 /.omp/orchestrator.db*

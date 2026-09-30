@@ -5,3 +5,4 @@
 - [Workers tool](domain/workers-tool.md) — Check, read, steer, interrupt, relaunch, land, and close workers.
 - [Reports tool](domain/reports-tool.md) — Find and read durable scout reports.
 - [Usage tool](domain/usage-tool.md) — See remaining provider usage for worker accounts.
+- [Models tool](domain/models-tool.md) — List worker models and remember model preferences.

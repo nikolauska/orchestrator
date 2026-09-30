@@ -2,31 +2,63 @@ import { execCommand, parseJson, stringAt, valueAt, type RuntimeDeps } from "./s
 
 export type ModelChoice = { model: string; thinking?: string };
 
-/** Chat models this OMP install can reach, keyed by exact selector, with their thinking levels. */
+export type CatalogModel = {
+  selector: string;
+  provider: string;
+  id: string;
+  name?: string;
+  contextWindow?: number;
+  maxTokens?: number;
+  thinking: string[];
+  input: string[];
+  /** USD per million tokens, as OMP reports it. */
+  cost?: { input: number; output: number };
+};
+
+/** Chat models this OMP install can reach, keyed by exact selector. */
 export async function chatModels(
   deps: RuntimeDeps,
   cwd: string,
   signal?: AbortSignal,
-): Promise<Map<string, string[]>> {
+): Promise<Map<string, CatalogModel>> {
   const value = parseJson(
     await execCommand(deps, "omp", ["models", "--json"], { cwd, signal }),
     "omp models",
   );
   const models = valueAt(value, ["models"]);
   if (!Array.isArray(models)) throw new Error("omp models returned no model list");
-  const catalog = new Map<string, string[]>();
+  const catalog = new Map<string, CatalogModel>();
   for (const entry of models) {
     const selector = stringAt(entry, ["selector"]);
     if (!selector || stringAt(entry, ["kind"]) !== "chat") continue;
-    const levels = valueAt(entry, ["thinking"]);
-    catalog.set(
+    const slash = selector.indexOf("/");
+    const input = valueAt(entry, ["input"]);
+    const costInput = valueAt(entry, ["cost", "input"]);
+    const costOutput = valueAt(entry, ["cost", "output"]);
+    const contextWindow = valueAt(entry, ["contextWindow"]);
+    const maxTokens = valueAt(entry, ["maxTokens"]);
+    const name = stringAt(entry, ["name"]);
+    catalog.set(selector, {
       selector,
-      Array.isArray(levels)
-        ? levels.filter((level): level is string => typeof level === "string")
-        : [],
-    );
+      provider: stringAt(entry, ["provider"]) ?? selector.slice(0, Math.max(slash, 0)),
+      id: stringAt(entry, ["id"]) ?? selector.slice(slash + 1),
+      ...(name ? { name } : {}),
+      ...(typeof contextWindow === "number" ? { contextWindow } : {}),
+      ...(typeof maxTokens === "number" ? { maxTokens } : {}),
+      thinking: strings(valueAt(entry, ["thinking"])),
+      input: strings(input),
+      ...(typeof costInput === "number" && typeof costOutput === "number"
+        ? { cost: { input: costInput, output: costOutput } }
+        : {}),
+    });
   }
   return catalog;
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : [];
 }
 
 /**
@@ -34,11 +66,11 @@ export async function chatModels(
  * catalog selectors pass. Some ids contain `:` themselves (OpenRouter's `:free`), so the whole
  * value is tried as a selector before a trailing `:level` is read as the thinking level.
  */
-export function resolveModel(catalog: Map<string, string[]>, value: string): ModelChoice {
+export function resolveModel(catalog: Map<string, CatalogModel>, value: string): ModelChoice {
   if (catalog.has(value)) return { model: value };
   const split = value.lastIndexOf(":");
   const selector = split > 0 ? value.slice(0, split) : value;
-  const levels = catalog.get(selector);
+  const levels = catalog.get(selector)?.thinking;
   if (!levels)
     throw new Error(`Unknown OMP model: ${value}; use an exact provider/id from \`omp models\``);
   const thinking = value.slice(split + 1);
@@ -49,6 +81,19 @@ export function resolveModel(catalog: Map<string, string[]>, value: string): Mod
       }`,
     );
   return { model: selector, thinking };
+}
+
+/** OMP model roles with `@role` aliases followed, so each role shows the model it really runs. */
+export async function modelRoles(
+  deps: RuntimeDeps,
+  cwd: string,
+  signal?: AbortSignal,
+): Promise<Record<string, string>> {
+  const output = await execCommand(deps, "omp", ["config", "get", "modelRoles", "--json"], {
+    cwd,
+    signal,
+  });
+  return rolesFrom(valueAt(parseJson(output, "omp config get"), ["value"]));
 }
 
 type UsageAmount = {
@@ -124,12 +169,11 @@ export async function usageSummary(
   now: number,
   signal?: AbortSignal,
 ): Promise<UsageSummary> {
-  const [usageOutput, rolesOutput] = await Promise.all([
+  const [usageOutput, roles] = await Promise.all([
     execCommand(deps, "omp", ["usage", "--json", "--redact"], { cwd, signal }),
-    execCommand(deps, "omp", ["config", "get", "modelRoles", "--json"], { cwd, signal }),
+    modelRoles(deps, cwd, signal),
   ]);
   const usage = parseJson(usageOutput, "omp usage");
-  const roles = rolesFrom(valueAt(parseJson(rolesOutput, "omp config get"), ["value"]));
   const reports = valueAt(usage, ["reports"]);
   const capacity = valueAt(usage, ["capacity"]);
   const providers = new Map<string, UsageProvider>();

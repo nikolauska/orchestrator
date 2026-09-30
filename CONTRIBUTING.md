@@ -13,6 +13,7 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 .omp/runtime/{git,herdr,omp,treehouse,session}.ts  CLI and session-file wrappers
 .omp/worker-config.yml                 OMP settings overlay passed to every worker
 .omp/projects.json                     Local project registry; ignored, never commit
+.omp/model-preferences.json            Local model preferences; ignored, never commit
 .omp/orchestrator.db                   Local worker state; ignored, never commit
 docs/domain/                           Confirmed customer-visible behavior
 tests/test-helpers.ts                  Shared worker test fixtures
@@ -21,6 +22,7 @@ tests/reports.test.ts                  Reports tool behavior tests
 tests/task.test.ts                     Task tool behavior tests
 tests/workers.test.ts                  Workers tool behavior tests
 tests/usage.test.ts                    Usage summary behavior tests
+tests/models.test.ts                   Models tool behavior tests
 ```
 
 ## Conventions
