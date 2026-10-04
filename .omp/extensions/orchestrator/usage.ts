@@ -15,6 +15,9 @@ const usageTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
     label: "Usage",
     loadMode: "essential",
     approval: "read",
+    // Opt out of strict structured output: OpenAI-compatible strict mode marks every
+    // property required, which would force the optional machine/project selectors.
+    strict: false,
     description:
       "Report provider usage limits for accounts OMP workers on one selected machine can spend: percent remaining, elapsed windows, resets, accounts, and OMP roles. Optional machine or project selects the host/configuration context; neither means local. Never sums hosts or selects a model.",
     parameters: z
