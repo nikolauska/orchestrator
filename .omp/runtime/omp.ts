@@ -1,3 +1,16 @@
+import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import {
+  configurationContextSchema,
+  type ConfigurationContext,
+  type ExecutionTarget,
+} from "./execution";
+import { PROTOCOL, type HostRequest, type HostResult } from "./helper-protocol";
+import { readProjectRegistry } from "./project-registry";
+import { callHelper } from "./remote";
+import { HostFailure } from "./host-paths";
+import { dispatchHostRequest, type HostRuntime } from "./host";
+import type { ToolAPI } from "./shared";
 import { execCommand, parseJson, stringAt, valueAt, type RuntimeDeps } from "./shared";
 
 export type ModelChoice = { model: string; thinking?: string };
@@ -15,14 +28,231 @@ export type CatalogModel = {
   cost?: { input: number; output: number };
 };
 
+export type OmpSelector = { machine?: string; project?: string };
+// Query identity is not launch readiness: a local catalog has no bound terminal session.
+export type OmpQueryTarget = Pick<
+  ExecutionTarget,
+  "hostId" | "os" | "workerConfig" | "ompProfile"
+> &
+  (
+    | { kind: "local"; machineId: "local"; session: string | null }
+    | { kind: "ssh"; machineId: string; sshTarget: string; session: string }
+  );
+export type ResolvedOmpContext = {
+  target: OmpQueryTarget;
+  context: ConfigurationContext;
+  controllerId: string;
+  runtime?: HostRuntime;
+};
+/** S4 resolves fresh machine bindings and the host's configured query cwd, never a local guess. */
+export type OmpContextResolver = (
+  machine: string,
+  signal?: AbortSignal,
+) => Promise<ResolvedOmpContext>;
+export type OmpQueryAPI = ToolAPI & { resolveOmpContext?: OmpContextResolver };
+export type SelectedOmpContext = {
+  machine: string;
+  session: string | null;
+  os: ExecutionTarget["os"];
+  configuration_context: ConfigurationContext;
+  resolved: ResolvedOmpContext;
+};
+export type OmpModelsSnapshot = {
+  context: ConfigurationContext;
+  catalog: Map<string, CatalogModel>;
+  roles: Record<string, string>;
+};
+export type RequestedWorkerChoice = { role?: string; model?: string };
+
+export function validateOmpSelector(selector: OmpSelector): void {
+  if (selector.machine !== undefined && selector.project !== undefined)
+    throw new Error("machine and project are mutually exclusive");
+  for (const value of [selector.machine, selector.project])
+    if (value !== undefined && (!value.trim() || value.includes("\0")))
+      throw new Error("machine and project selectors must be nonempty");
+}
+
+export async function selectOmpContext(
+  pi: OmpQueryAPI,
+  selector: OmpSelector,
+  signal?: AbortSignal,
+): Promise<SelectedOmpContext> {
+  validateOmpSelector(selector);
+  signal?.throwIfAborted();
+  const projects =
+    selector.project === undefined
+      ? undefined
+      : (await readProjectRegistry(pi.cwd, signal)).registry.projects;
+  const project =
+    projects && selector.project !== undefined && Object.hasOwn(projects, selector.project)
+      ? projects[selector.project]
+      : undefined;
+  if (selector.project !== undefined && !project)
+    throw new Error(`Unknown project: ${selector.project}`);
+  const machine = project?.machine ?? selector.machine ?? "local";
+  if (!pi.resolveOmpContext) throw new Error("OMP queries require the machine context resolver");
+  const resolved = await pi.resolveOmpContext(machine, signal);
+  const target = resolved.target;
+  if (machine === "local" && target.kind !== "local")
+    throw new Error("Local OMP queries cannot use a remote target");
+  if (machine !== "local" && target.kind !== "ssh")
+    throw new Error("Remote OMP queries cannot fall back to the controller");
+  if (
+    project &&
+    (target.machineId !== project.machine ||
+      (project.binding &&
+        (target.kind !== "ssh" ||
+          target.sshTarget !== project.binding.sshTarget ||
+          target.session !== project.binding.session ||
+          target.hostId !== project.binding.hostId)))
+  )
+    throw new Error(
+      "Project machine binding changed; restore it or re-register for future launches",
+    );
+  const context = configurationContextSchema.parse({
+    ...resolved.context,
+    ...(project ? { cwd: project.path } : {}),
+  });
+  if (
+    context.overlayPath !== target.workerConfig.path ||
+    context.overlaySha256 !== target.workerConfig.sha256 ||
+    context.ompProfile !== target.ompProfile
+  )
+    throw new Error("OMP query context differs from the resolved machine overlay/profile");
+  return {
+    machine: target.machineId,
+    session: target.session,
+    os: target.os,
+    configuration_context: context,
+    resolved: { ...resolved, context },
+  };
+}
+
+function queryArguments(command: string[], context: string | ConfigurationContext): string[] {
+  return typeof context === "string"
+    ? command
+    : [
+        ...(context.ompProfile ? ["--profile", context.ompProfile] : []),
+        `--config=${context.overlayPath}`,
+        ...command,
+      ];
+}
+function queryCwd(context: string | ConfigurationContext): string {
+  return typeof context === "string" ? context : context.cwd;
+}
+
+async function verifyContext(context: string | ConfigurationContext): Promise<void> {
+  if (typeof context === "string") return;
+  configurationContextSchema.parse(context);
+  const digest = createHash("sha256")
+    .update(await readFile(context.overlayPath))
+    .digest("hex");
+  if (digest !== context.overlaySha256)
+    throw new Error("Worker overlay hash changed; restore the approved bytes (including LF/CRLF)");
+}
+
+export async function selectedModels(
+  pi: OmpQueryAPI,
+  selected: SelectedOmpContext,
+  signal?: AbortSignal,
+): Promise<OmpModelsSnapshot> {
+  const resolved = selected.resolved;
+  const request: HostRequest<"omp.models"> = {
+    protocol: PROTOCOL,
+    version: 1,
+    requestId: crypto.randomUUID(),
+    controllerId: resolved.controllerId,
+    expectedHostId: resolved.target.hostId,
+    op: "omp.models",
+    args: { context: selected.configuration_context },
+  };
+  let result: HostResult<"omp.models">;
+  if (resolved.target.kind === "ssh") {
+    result = await callHelper(resolved.target, request, { spawnStdio: pi.spawnStdio, signal });
+  } else {
+    signal?.throwIfAborted();
+    const reply = await dispatchHostRequest(resolved.runtime!, request);
+    if (!reply.ok) throw new HostFailure(reply.error.code, reply.error.message, reply.error);
+    result = reply.result;
+  }
+  return {
+    context: result.context,
+    catalog: new Map(result.catalog.map((entry) => [entry.selector, entry])),
+    roles: result.roles,
+  };
+}
+
+export async function selectedUsage(
+  pi: OmpQueryAPI,
+  selected: SelectedOmpContext,
+  now: number,
+  signal?: AbortSignal,
+): Promise<UsageSummary & { context: ConfigurationContext }> {
+  const resolved = selected.resolved;
+  const request: HostRequest<"omp.usage"> = {
+    protocol: PROTOCOL,
+    version: 1,
+    requestId: crypto.randomUUID(),
+    controllerId: resolved.controllerId,
+    expectedHostId: resolved.target.hostId,
+    op: "omp.usage",
+    args: { context: selected.configuration_context, now },
+  };
+  if (resolved.target.kind === "ssh")
+    return await callHelper(resolved.target, request, { spawnStdio: pi.spawnStdio, signal });
+  signal?.throwIfAborted();
+  const reply = await dispatchHostRequest(resolved.runtime!, request);
+  if (!reply.ok) throw new HostFailure(reply.error.code, reply.error.message, reply.error);
+  return reply.result;
+}
+
+/** Call again in the allocated/reset cwd: project-local configuration can change the choice. */
+export async function effectiveWorkerChoice(
+  source: RuntimeDeps | OmpModelsSnapshot,
+  context: ConfigurationContext,
+  requested: RequestedWorkerChoice = {},
+  signal?: AbortSignal,
+): Promise<ModelChoice> {
+  signal?.throwIfAborted();
+  configurationContextSchema.parse(context);
+  if (requested.role !== undefined && requested.model !== undefined)
+    throw new Error("role and model are mutually exclusive");
+  const snapshot =
+    "catalog" in source
+      ? source
+      : {
+          context,
+          catalog: await chatModels(source, context, signal),
+          roles: await modelRoles(source, context, signal),
+        };
+  if (
+    snapshot.context.cwd !== context.cwd ||
+    snapshot.context.ompProfile !== context.ompProfile ||
+    snapshot.context.overlayPath !== context.overlayPath ||
+    snapshot.context.overlaySha256 !== context.overlaySha256
+  )
+    throw new Error(
+      "Model snapshot belongs to a different configuration context; revalidate in the worker cwd",
+    );
+  if (requested.model !== undefined) return resolveModel(snapshot.catalog, requested.model);
+  const role = requested.role ?? "default";
+  const value = snapshot.roles[role];
+  if (!value) throw new Error(`Selected host context has no configured OMP role: ${role}`);
+  return resolveModel(snapshot.catalog, value);
+}
+
 /** Chat models this OMP install can reach, keyed by exact selector. */
 export async function chatModels(
   deps: RuntimeDeps,
-  cwd: string,
+  cwd: string | ConfigurationContext,
   signal?: AbortSignal,
 ): Promise<Map<string, CatalogModel>> {
+  await verifyContext(cwd);
   const value = parseJson(
-    await execCommand(deps, "omp", ["models", "--json"], { cwd, signal }),
+    await execCommand(deps, "omp", queryArguments(["models", "--json"], cwd), {
+      cwd: queryCwd(cwd),
+      signal,
+    }),
     "omp models",
   );
   const models = valueAt(value, ["models"]);
@@ -47,7 +277,13 @@ export async function chatModels(
       ...(typeof maxTokens === "number" ? { maxTokens } : {}),
       thinking: strings(valueAt(entry, ["thinking"])),
       input: strings(input),
-      ...(typeof costInput === "number" && typeof costOutput === "number"
+      // Routing placeholders expose negative sentinel prices, not an actual quoted cost.
+      ...(typeof costInput === "number" &&
+      Number.isFinite(costInput) &&
+      costInput >= 0 &&
+      typeof costOutput === "number" &&
+      Number.isFinite(costOutput) &&
+      costOutput >= 0
         ? { cost: { input: costInput, output: costOutput } }
         : {}),
     });
@@ -86,14 +322,26 @@ export function resolveModel(catalog: Map<string, CatalogModel>, value: string):
 /** OMP model roles with `@role` aliases followed, so each role shows the model it really runs. */
 export async function modelRoles(
   deps: RuntimeDeps,
-  cwd: string,
+  cwd: string | ConfigurationContext,
   signal?: AbortSignal,
 ): Promise<Record<string, string>> {
-  const output = await execCommand(deps, "omp", ["config", "get", "modelRoles", "--json"], {
-    cwd,
-    signal,
-  });
-  return rolesFrom(valueAt(parseJson(output, "omp config get"), ["value"]));
+  await verifyContext(cwd);
+  const output = await execCommand(
+    deps,
+    "omp",
+    queryArguments(["config", "get", "modelRoles", "--json"], cwd),
+    {
+      cwd: queryCwd(cwd),
+      signal,
+    },
+  );
+  const value = valueAt(parseJson(output, "omp config get"), ["value"]);
+  // A colon can belong to an exact model id; only its host catalog can separate a level.
+  const overrides =
+    value &&
+    typeof value === "object" &&
+    Object.values(value).some((role) => typeof role === "string" && /^@[^:]+:/.test(role));
+  return rolesFrom(value, overrides ? await chatModels(deps, cwd, signal) : undefined);
 }
 
 type UsageAmount = {
@@ -165,12 +413,16 @@ export type UsageSummary = {
  */
 export async function usageSummary(
   deps: RuntimeDeps,
-  cwd: string,
+  cwd: string | ConfigurationContext,
   now: number,
   signal?: AbortSignal,
 ): Promise<UsageSummary> {
+  await verifyContext(cwd);
   const [usageOutput, roles] = await Promise.all([
-    execCommand(deps, "omp", ["usage", "--json", "--redact"], { cwd, signal }),
+    execCommand(deps, "omp", queryArguments(["usage", "--json", "--redact"], cwd), {
+      cwd: queryCwd(cwd),
+      signal,
+    }),
     modelRoles(deps, cwd, signal),
   ]);
   const usage = parseJson(usageOutput, "omp usage");
@@ -237,7 +489,7 @@ export async function usageSummary(
 }
 
 /** Role aliases (`@slow`) point at another role; follow them so each role shows its real model. */
-function rolesFrom(value: unknown): Record<string, string> {
+function rolesFrom(value: unknown, catalog?: Map<string, CatalogModel>): Record<string, string> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return {};
   const raw = Object.fromEntries(
     Object.entries(value).filter(
@@ -246,10 +498,18 @@ function rolesFrom(value: unknown): Record<string, string> {
   );
   const resolve = (model: string, seen: Set<string>): string => {
     if (!model.startsWith("@")) return model;
-    const target = model.slice(1).split(":", 1)[0]!;
+    const split = model.indexOf(":");
+    const target = model.slice(1, split < 0 ? undefined : split);
     if (seen.has(target) || raw[target] === undefined) return model;
     seen.add(target);
-    return resolve(raw[target], seen);
+    const resolved = resolve(raw[target], seen);
+    if (resolved.startsWith("@") || split < 0) return resolved;
+    const suffix = model.slice(split);
+    try {
+      return `${resolveModel(catalog!, resolved).model}${suffix}`;
+    } catch {
+      return `${resolved}${suffix}`;
+    }
   };
   return Object.fromEntries(
     Object.entries(raw).map(([role, model]) => [role, resolve(model, new Set([role]))]),

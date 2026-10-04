@@ -1,18 +1,24 @@
+import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { chatModels, modelRoles, resolveModel, type CatalogModel } from "../../runtime/omp";
 import {
-  errorMessage,
-  text,
-  type ModelsParams,
-  type ToolAPI,
-  type ToolFactory,
-} from "../../runtime/shared";
+  resolveModel,
+  selectOmpContext,
+  selectedModels,
+  validateOmpSelector,
+  type CatalogModel,
+  type OmpQueryAPI,
+  type OmpSelector,
+} from "../../runtime/omp";
+import { errorMessage, text, type ModelsParams, type ToolAPI } from "../../runtime/shared";
 
 export type ModelPreference =
   | { stance: "prefer"; for?: string[]; rank?: number; note?: string; updated_at: string }
   | { stance: "avoid"; note?: string; updated_at: string };
 
+export type HostModelsParams =
+  | (Exclude<ModelsParams, { op: "forget" }> & OmpSelector)
+  | Extract<ModelsParams, { op: "forget" }>;
 export type ModelRow = {
   /** Exact value for `orchestrator_task` `model`, thinking suffix included. */
   model: string;
@@ -134,18 +140,19 @@ function matches(item: ModelRow, query: string): boolean {
   return haystack.some((value) => value.toLowerCase().includes(query));
 }
 
-async function listModels(
+export async function listModels(
   root: string,
-  pi: ToolAPI,
-  params: Extract<ModelsParams, { op: "list" }>,
+  pi: OmpQueryAPI,
+  params: Extract<HostModelsParams, { op: "list" }>,
   signal?: AbortSignal,
 ) {
   const view = params.view ?? "preferred";
-  const [catalog, roles, preferences] = await Promise.all([
-    chatModels(pi, root, signal),
-    modelRoles(pi, root, signal),
+  const selected = await selectOmpContext(pi, params, signal);
+  const [snapshot, preferences] = await Promise.all([
+    selectedModels(pi, selected, signal),
     readPreferences(root, pi.zod, signal),
   ]);
+  const { catalog, roles } = snapshot;
   const rolesByModel = new Map<string, string[]>();
   for (const [role, value] of Object.entries(roles))
     rolesByModel.set(value, [...(rolesByModel.get(value) ?? []), role]);
@@ -192,6 +199,11 @@ async function listModels(
   const limit = params.limit ?? DEFAULT_LIMIT;
   const models = filtered.slice(0, limit);
   const details = {
+    machine: selected.machine,
+    session: selected.session,
+    os: selected.os,
+    configuration_context: snapshot.context,
+    observed_at: new Date().toISOString(),
     view,
     total: filtered.length,
     returned: models.length,
@@ -201,29 +213,34 @@ async function listModels(
   return text(`Models:\n${JSON.stringify(details, null, 2)}`, details);
 }
 
-const modelsTool: ToolFactory = (pi) => {
+const modelsTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
   const z = pi.zod;
-
+  const selector = { machine: z.string().min(1).optional(), project: z.string().min(1).optional() };
+  const exclusive = (params: OmpSelector) =>
+    params.machine === undefined || params.project === undefined;
   return {
     name: "models",
     label: "Models",
     loadMode: "essential",
     approval: "write",
     description:
-      "List OMP chat models with the user's saved model preferences and the models current OMP roles run, and remember preferences. `list` view `preferred` (default) shows only models with a saved preference or role; `all` searches the full catalog. Each row's `model` is the exact value for orchestrator_task `model`. `prefer` saves a preferred model, optionally with the roles or kinds of work it is for, a rank (1 = first choice), and the user's reason; `avoid` marks a model never to pick on your own; `forget` deletes a saved entry. Saving replaces any earlier entry for the same model value.",
+      "List OMP chat models with the user's saved model preferences and the models current OMP roles run, and remember preferences. `list` view `preferred` (default) shows only models with a saved preference or role; `all` searches the full catalog. Each row's `model` is the exact value for orchestrator_task `model`. `prefer` saves a preferred model, optionally with the roles or kinds of work it is for, a rank (1 = first choice), and the user's reason; `avoid` marks a model never to pick on your own; `forget` deletes a saved entry. Saving replaces any earlier entry for the same model value. Optional machine or project selects the catalog and configuration context; neither means local. Preferences stay controller-local; forget needs no host.",
     parameters: z.union([
       z
         .object({
           op: z.literal("list"),
+          ...selector,
           view: z.enum(["preferred", "all"]).optional(),
           provider: z.string().optional(),
           q: z.string().optional(),
           limit: z.number().int().min(1).optional(),
         })
-        .strict(),
+        .strict()
+        .refine(exclusive, "machine and project are mutually exclusive"),
       z
         .object({
           op: z.literal("prefer"),
+          ...selector,
           model: z.string().min(1),
           for: z
             .array(z.string().min(1))
@@ -232,16 +249,24 @@ const modelsTool: ToolFactory = (pi) => {
           rank: z.number().int().min(1).optional(),
           note: z.string().optional(),
         })
-        .strict(),
+        .strict()
+        .refine(exclusive, "machine and project are mutually exclusive"),
       z
-        .object({ op: z.literal("avoid"), model: z.string().min(1), note: z.string().optional() })
-        .strict(),
+        .object({
+          ...selector,
+          op: z.literal("avoid"),
+          model: z.string().min(1),
+          note: z.string().optional(),
+        })
+        .strict()
+        .refine(exclusive, "machine and project are mutually exclusive"),
       z.object({ op: z.literal("forget"), model: z.string().min(1) }).strict(),
     ]),
-    execute: async (_id, params: ModelsParams, signal?: AbortSignal) => {
+    execute: async (_id: string, params: HostModelsParams, signal?: AbortSignal) => {
       const root = pi.cwd;
       try {
         signal?.throwIfAborted();
+        if (params.op !== "forget") validateOmpSelector(params);
         if (params.op === "list") return await listModels(root, pi, params, signal);
 
         const preferences = await readPreferences(root, pi.zod, signal);
@@ -258,7 +283,9 @@ const modelsTool: ToolFactory = (pi) => {
             throw new Error("Preference rank must be a whole number of 1 or more");
         // Validate against the live catalog so a typo can't be remembered and later block
         // or misdirect a launch; the stored key is the exact value orchestrator_task accepts.
-        const choice = resolveModel(await chatModels(pi, root, signal), params.model);
+        const selected = await selectOmpContext(pi, params, signal);
+        const snapshot = await selectedModels(pi, selected, signal);
+        const choice = resolveModel(snapshot.catalog, params.model);
         const model = choice.thinking ? `${choice.model}:${choice.thinking}` : choice.model;
         const updated_at = new Date().toISOString();
         const note = params.note?.trim();
@@ -278,10 +305,16 @@ const modelsTool: ToolFactory = (pi) => {
             : { stance: "avoid", ...(note ? { note } : {}), updated_at };
         preferences[model] = preference;
         await writePreferences(root, preferences, signal);
-        return text(`Saved model preference:\n${JSON.stringify({ model, preference }, null, 2)}`, {
+        const details = {
           model,
           preference,
-        });
+          machine: selected.machine,
+          session: selected.session,
+          os: selected.os,
+          configuration_context: snapshot.context,
+          observed_at: new Date().toISOString(),
+        };
+        return text(`Saved model preference:\n${JSON.stringify(details, null, 2)}`, details);
       } catch (error) {
         return text(errorMessage(error), undefined, true);
       }

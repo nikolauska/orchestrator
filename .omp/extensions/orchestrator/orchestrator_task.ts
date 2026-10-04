@@ -1,49 +1,46 @@
 import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import { mkdir, realpath, rm } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+import { mkdir } from "node:fs/promises";
 import {
-  LEASE_ID,
   NAME,
   errorMessage,
   text,
   type IndependentTaskParams,
-  type Preflight,
   type ProjectTaskParams,
   type TaskItem,
   type TaskParams,
   type ToolFactory,
   type WorkerRecord,
 } from "../../runtime/shared";
-import { chatModels, resolveModel } from "../../runtime/omp";
-import { readProjects, validateName } from "./projects";
+import type { ConfigurationContext, ExecutionTarget, HostPath } from "../../runtime/execution";
+import { agentName } from "../../runtime/execution";
+import { canonicalPath } from "../../runtime/host-paths";
+import type { HostArgs, HostResult } from "../../runtime/helper-protocol";
 import {
-  branchHead,
-  checkBranch,
-  currentBranch,
-  head,
-  originLag,
-  resetHard,
-  status,
-  topLevel,
-  version as gitVersion,
-} from "../../runtime/git";
+  effectiveWorkerChoice,
+  selectedModels,
+  type ModelChoice,
+  type SelectedOmpContext,
+} from "../../runtime/omp";
 import {
-  closeWorkerSpace,
+  callMachine,
+  checkMachine,
+  machineError,
+  resolveMachine,
+  type ResolvedMachine,
+} from "../../runtime/machines";
+import type { ControllerOperation } from "../../runtime/store";
+import projectsTool, { readProjects, validateName } from "./projects";
+import {
+  agentBinding,
   createTab,
-  ensureIntegration,
   getAgent,
   promptAgent,
   startOmpAgent,
   waitForShell,
-  type HerdrSpace,
 } from "../../runtime/herdr";
-import { projectSpace, researchSpace, workerLabel } from "../../runtime/spaces";
-import {
-  acquireLease,
-  returnLease,
-  type TreehouseLease,
-  version as treehouseVersion,
-} from "../../runtime/treehouse";
+import { projectSpace, researchSpace, serializeSpaces, workerLabel } from "../../runtime/spaces";
 import {
   adoptWorker,
   handleSession,
@@ -53,13 +50,36 @@ import {
   requireOwnership,
   resumeWorkers,
   stateFor,
+  watchWorker,
   type WorkerState,
 } from "./workers";
+
+export type LaunchParams = ProjectTaskParams | (IndependentTaskParams & { machine?: string });
+export type LaunchPreflight = {
+  target: ExecutionTarget;
+  resolved: ResolvedMachine;
+  selected: SelectedOmpContext;
+  forbiddenRoots: HostPath[];
+  choices: Record<string, ModelChoice>;
+} & (
+  | { scope: "independent" }
+  | {
+      scope: "project";
+      project: string;
+      projectPath: string;
+      projectPathKey: string;
+      head: string;
+      branch?: string;
+      localChanges: string;
+      starts: Record<string, string>;
+      originWarnings: Record<string, string>;
+    }
+);
 
 export async function runTask(
   state: WorkerState,
   root: string,
-  params: TaskParams,
+  params: LaunchParams,
   signal?: AbortSignal,
 ): Promise<CustomToolResult> {
   state.active = true;
@@ -85,24 +105,17 @@ export async function runTask(
     await resumeWorkers(state);
     const active = params.tasks.find((item) => hasWorker(state, item.name));
     if (active) throw new Error(`Worker name already retained: ${active.name}`);
-    if (params.tasks.some((item) => item.model)) {
-      const catalog = await chatModels(state.deps, root, signal);
-      params = {
-        ...params,
-        tasks: params.tasks.map((item) => {
-          if (!item.model) return item;
-          try {
-            return { ...item, ...resolveModel(catalog, item.model) };
-          } catch (error) {
-            throw new Error(`Invalid OMP model for ${item.name}: ${errorMessage(error)}`);
-          }
-        }),
-      };
-    }
     const preflight = await preflightTask(state, root, params, signal);
+    const collision = params.tasks.find((item) => hasWorker(state, item.name));
+    if (collision) throw new Error(`Worker name already retained: ${collision.name}`);
+    // Reserve the entire batch before any launch can yield to a competing call.
+    const records = params.tasks.map((item) =>
+      workerRecord(state, preflight, item, randomUUID(), root, params.context),
+    );
+    for (const record of records) adoptWorker(state, record, "starting");
     const launched = await Promise.all(
-      params.tasks.map((item) =>
-        launchWorker(state, root, preflight, params.context, item, signal),
+      params.tasks.map((item, index) =>
+        launchWorker(state, preflight, params.context, item, records[index]!, signal),
       ),
     );
     return text(`Visible workers launched:\n${JSON.stringify(launched, null, 2)}`, launched);
@@ -123,6 +136,7 @@ function validateTask(params: TaskParams): void {
       throw new Error("Invalid task scope");
   } else if (
     typeof (params as ProjectTaskParams).project !== "string" ||
+    Object.prototype.hasOwnProperty.call(params, "machine") ||
     !NAME.test((params as ProjectTaskParams).project)
   ) {
     throw new Error("Invalid registered project name");
@@ -149,6 +163,8 @@ function validateTask(params: TaskParams): void {
       throw new Error(`Set thinking for ${item.name} with a :level suffix on model`);
     if (independent && item.kind !== "scout")
       throw new Error("Independent scope accepts scout tasks only");
+    if (independent && item.hold !== undefined)
+      throw new Error(`Independent scout ${item.name} cannot set hold`);
     if (independent && item.pushTo !== undefined)
       throw new Error(`Independent scout ${item.name} cannot set pushTo`);
     if (!independent && item.kind === "scout" && item.pushTo !== undefined)
@@ -173,134 +189,139 @@ function validateTask(params: TaskParams): void {
   }
 }
 
-async function preflightTask(
+export async function preflightTask(
   state: WorkerState,
   root: string,
-  params: TaskParams,
+  params: LaunchParams,
   signal?: AbortSignal,
-): Promise<Preflight> {
-  if ("scope" in params) {
-    await requireHerdr(state, false, signal);
-    const projects = await readProjects(root, signal);
-    const canonicalRoot = await realpath(state.root);
-    const forbiddenRoots = [canonicalRoot, ...Object.values(projects)];
-    await mkdir(state.neutralRoot, { recursive: true });
-    const base = await realpath(state.neutralRoot);
-    for (const forbidden of forbiddenRoots) {
-      const placement = relative(forbidden, base);
-      if (!placement || (placement !== ".." && !placement.startsWith(`..${sep}`)))
-        throw new Error(
-          `Neutral working directory base is inside reserved project context: ${forbidden}`,
-        );
-    }
-    return {
-      scope: "independent",
-      workspace: await researchSpace(state, signal),
-      forbiddenRoots,
-    };
-  }
-  const projects = await readProjects(root, signal);
-  const projectPath = projects[params.project];
-  if (!projectPath)
+): Promise<LaunchPreflight> {
+  const registry = await readProjects(root, signal);
+  const entry =
+    "project" in params && Object.hasOwn(registry.projects, params.project)
+      ? registry.projects[params.project]
+      : undefined;
+  if ("project" in params && !entry)
+    throw new Error(`Unknown registered project: ${params.project}`);
+  const saved = state.store.independentTarget;
+  const override = "scope" in params ? params.machine || undefined : undefined;
+  const selector = entry?.machine ?? (override || saved.machineId);
+  const binding = entry?.binding
+    ? { machineId: entry.machine, ...entry.binding }
+    : !entry && !override && "sshTarget" in saved
+      ? saved
+      : undefined;
+  const options = { controllerId: state.store.controllerId, binding, signal };
+  const checked = await checkMachine(state.api, selector, {
+    ...options,
+    preflight: entry ? { scope: "project", projectPath: entry.path } : { scope: "independent" },
+  });
+  if (!checked.ready || !checked.target || !checked.preflight)
     throw new Error(
-      `Unknown registered project: ${params.project}. Registered: ${Object.keys(projects).sort().join(", ") || "(none)"}`,
+      checked.errors
+        .map((error) => `${error.message}${error.remedy ? ` ${error.remedy}` : ""}`)
+        .join("; "),
     );
-  await requireHerdr(state, true, signal);
-  let canonical: string;
-  try {
-    canonical = await realpath(projectPath);
-  } catch {
-    throw new Error(`Registered project path is missing: ${projectPath}`);
-  }
-  const top = await topLevel(state.deps, { cwd: canonical, signal });
-  if ((await realpath(top)) !== canonical || canonical !== projectPath)
-    throw new Error(`Registered path is not its exact Git root: ${projectPath}`);
-  const initialHead = await head(state.deps, { cwd: canonical, signal });
-  for (const item of params.tasks) {
-    if (item.pushTo) await checkBranch(state.deps, item.pushTo, { cwd: canonical, signal });
-    if (item.startFrom) await checkBranch(state.deps, item.startFrom, { cwd: canonical, signal });
-  }
-  const starts = Object.fromEntries(
-    await Promise.all(
-      params.tasks.flatMap((item) =>
-        item.startFrom
-          ? [
-              branchHead(state.deps, item.startFrom, { cwd: canonical, signal }).then(
-                (branchHead) => [item.name, branchHead] as const,
-              ),
-            ]
-          : [],
-      ),
-    ),
-  );
-  const needsLocalDelivery = params.tasks.some(
-    (item) => item.kind === "implementation" && !item.pushTo,
-  );
-  const needsLocalChanges =
-    needsLocalDelivery || params.tasks.some((item) => item.kind === "scout");
-  const localChanges = needsLocalChanges
-    ? await status(state.deps, { cwd: canonical, signal })
-    : "";
-  let branch: string | undefined;
-  if (needsLocalDelivery) {
-    if (localChanges)
-      throw new Error(`Registered project must be clean for local delivery: ${params.project}`);
-    branch = await currentBranch(state.deps, { cwd: canonical, signal });
-    if (!branch) throw new Error("Local delivery requires a named branch");
-    const mismatched = params.tasks.find(
-      (item) =>
-        item.kind === "implementation" &&
-        !item.pushTo &&
-        item.startFrom &&
-        item.startFrom !== branch,
-    );
-    if (mismatched)
-      throw new Error(
-        `Local delivery for ${mismatched.name} requires ${mismatched.startFrom} to be checked out`,
+  await requireHerdr(state, checked.target);
+  const target = checked.target;
+  const resolved = await resolveMachine(state.api, target.machineId, options);
+  if (resolved.host.hostId !== target.hostId) throw new Error("Host changed during preflight");
+  const context = { ...checked.preflight.context, ...(entry ? { cwd: entry.path } : {}) };
+  const selected: SelectedOmpContext = {
+    machine: target.machineId,
+    session: target.session,
+    os: target.os,
+    configuration_context: context,
+    resolved: {
+      target,
+      context,
+      controllerId: state.store.controllerId,
+      runtime: resolved.runtime,
+    },
+  };
+  const models = await selectedModels(state.api, selected, signal);
+  const choices: Record<string, ModelChoice> = {};
+  for (const item of params.tasks)
+    choices[item.name] = await effectiveWorkerChoice(models, context, item, signal);
+  const forbiddenRoots: HostPath[] = [];
+  for (const [name, registered] of Object.entries(registry.projects)) {
+    if (
+      registered.machine !== target.machineId &&
+      !(registered.binding && registered.binding.hostId === target.hostId)
+    )
+      continue;
+    try {
+      const validated = await callMachine(
+        state.api,
+        resolved,
+        "path.validate",
+        { path: registered.path, kind: registered === entry ? "git_root" : "forbidden_root" },
+        options,
       );
+      forbiddenRoots.push(validated.path);
+    } catch (error) {
+      throw new Error(`Cannot validate registered project ${name}: ${errorMessage(error)}`);
+    }
   }
-  // Workers start from local refs; flag a start that its remote has already moved past.
-  const lags = new Map<string, Promise<string | undefined>>();
-  const originWarnings: Record<string, string> = {};
-  await Promise.all(
-    params.tasks.map(async (item) => {
-      const ref = item.startFrom ?? "HEAD";
-      const startHead = starts[item.name] ?? initialHead;
-      const key = `${ref}\0${startHead}`;
-      if (!lags.has(key)) lags.set(key, originLag(state.deps, canonical, ref, startHead, signal));
-      const warning = await lags.get(key);
-      if (warning) originWarnings[item.name] = warning;
-    }),
+  if (target.kind === "local") {
+    forbiddenRoots.push(await canonicalPath(root));
+  }
+  const common = { target, resolved, selected, forbiddenRoots, choices };
+  if (!entry || !("project" in params)) return { ...common, scope: "independent" };
+  const snapshot = await callMachine(
+    state.api,
+    resolved,
+    "project.snapshot",
+    {
+      projectPath: entry.path,
+      tasks: params.tasks.map(({ name, kind, startFrom, pushTo }) => ({
+        name,
+        kind,
+        ...(startFrom ? { startFrom } : {}),
+        ...(pushTo ? { pushTo } : {}),
+      })),
+    },
+    options,
   );
+  if (entry.pathKey && entry.pathKey !== snapshot.project.pathKey)
+    throw new Error("Registered project identity changed during preflight.");
+  if (!entry.pathKey) {
+    // Reuse the registry writer's lock and atomic migration instead of a second write convention.
+    // This factory does not consume the agent-loop context required by the generic tool type.
+    const executeRegistration = projectsTool(state.api).execute as unknown as (
+      id: string,
+      params: unknown,
+      signal?: AbortSignal,
+    ) => Promise<CustomToolResult>;
+    const result = await executeRegistration(
+      "launch-validation",
+      { op: "add", name: params.project, path: snapshot.project.path, machine: "local" },
+      signal,
+    );
+    if (result.isError)
+      throw new Error(result.content.map((part) => ("text" in part ? part.text : "")).join("\n"));
+  }
   return {
+    ...common,
     scope: "project",
     project: params.project,
-    projectPath: canonical,
-    head: initialHead,
-    branch,
-    localChanges,
-    starts,
-    originWarnings,
+    projectPath: snapshot.project.path,
+    projectPathKey: snapshot.project.pathKey,
+    head: snapshot.head,
+    branch: snapshot.branch,
+    localChanges: snapshot.excludedChanges,
+    starts: snapshot.starts,
+    originWarnings: snapshot.originWarnings,
   };
 }
 
-async function requireHerdr(
-  state: WorkerState,
-  projectScope: boolean,
-  signal?: AbortSignal,
-): Promise<void> {
+async function requireHerdr(state: WorkerState, target: ExecutionTarget): Promise<void> {
   if (
-    state.env.HERDR_ENV !== "1" ||
-    !state.env.HERDR_SOCKET_PATH ||
-    !state.env.HERDR_PANE_ID?.split(":", 1)[0]
+    target.kind === "local" &&
+    (state.env.HERDR_ENV !== "1" || !state.env.HERDR_SOCKET_PATH || !state.env.HERDR_PANE_ID)
   )
     throw new Error(
       "Herdr's OMP integration is required; run `herdr integration install omp` and restart OMP",
     );
-  await Promise.all([
-    ensureIntegration(state.deps, signal),
-    ...(projectScope ? [gitVersion(state.deps, signal), treehouseVersion(state.deps, signal)] : []),
-  ]);
 }
 
 /**
@@ -308,7 +329,7 @@ async function requireHerdr(
  * observable finish line and what is safe to do without asking, instead of a step-by-step recipe.
  */
 function workerPrompt(
-  preflight: Preflight,
+  preflight: LaunchPreflight,
   context: string,
   item: TaskItem,
   directory: string,
@@ -328,197 +349,372 @@ function workerPrompt(
   return `${lead}You are a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded; global and user OMP instructions still apply. Scratch files in ${directory} are disposable and never delivered; do not create commits or implement changes for delivery. Public web search and public URL reads are enabled. Use authenticated external systems only when this assignment explicitly asks for them.\n\n${finish} Include source URLs and the research date in the report.\n\n${item.task}`;
 }
 
+export function prepareLaunchOperation(
+  state: WorkerState,
+  record: WorkerRecord,
+  channel: ControllerOperation["channel"],
+  operation: string,
+  request: unknown,
+): ControllerOperation {
+  const now = new Date().toISOString();
+  const intent: ControllerOperation = {
+    id: randomUUID(),
+    launchId: record.launch_id!,
+    workerName: record.name,
+    channel,
+    operation,
+    requestHash: createHash("sha256").update(JSON.stringify(request)).digest("hex"),
+    state: "prepared",
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.store.saveOperation(intent);
+  return intent;
+}
+
+export async function runLaunchOperation<T>(
+  state: WorkerState,
+  intent: ControllerOperation,
+  invoke: (id: string) => Promise<T>,
+  acquired?: (result: T) => void,
+  attempt = 0,
+): Promise<T> {
+  intent.state = "sent";
+  intent.updatedAt = new Date().toISOString();
+  state.store.saveOperation(intent);
+  try {
+    const result = await invoke(intent.id);
+    acquired?.(result);
+    intent.state = "confirmed";
+    intent.response = result;
+    intent.updatedAt = new Date().toISOString();
+    state.store.saveOperation(intent);
+    return result;
+  } catch (error) {
+    const detail = machineError(error, intent.channel);
+    // An untyped exception after dispatch is not proof that a mutation had no effect.
+    if (!(error && typeof error === "object" && ("detail" in error || "effect" in error))) {
+      detail.effect = "unknown";
+      detail.retry = "reconcile";
+    }
+    intent.state = detail.effect === "none" ? "refused" : "uncertain";
+    intent.error = {
+      code: detail.code,
+      message: detail.message,
+      channel: detail.channel,
+      effect: detail.effect,
+      retry: detail.retry,
+      operationId: intent.id,
+      ...(detail.remedy ? { remedy: detail.remedy } : {}),
+    };
+    intent.updatedAt = new Date().toISOString();
+    state.store.saveOperation(intent);
+    if (
+      intent.channel === "helper" &&
+      detail.code === "LOCK_BUSY" &&
+      detail.effect === "none" &&
+      attempt < 2
+    ) {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 50 * (attempt + 1));
+      await promise;
+      return runLaunchOperation(state, intent, invoke, acquired, attempt + 1);
+    }
+    throw error;
+  }
+}
+
 async function launchWorker(
   state: WorkerState,
-  root: string,
-  preflight: Preflight,
+  preflight: LaunchPreflight,
   context: string,
   item: TaskItem,
+  record: WorkerRecord,
   signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
-  const leaseHolder = `omp-orchestrator:${item.name}`;
-  let lease: TreehouseLease | undefined;
-  let directory: string | undefined;
-  let workspaceId: string | undefined;
-  let tabId: string | undefined;
-  let paneId: string | undefined;
-  let ompMayHaveStarted = false;
-  let prompt: string | undefined;
-  const originWarning =
-    preflight.scope === "project" ? preflight.originWarnings[item.name] : undefined;
-  const reportPath =
-    item.kind === "scout"
-      ? join(
-          root,
-          ".omp",
-          "reports",
-          preflight.scope === "independent" ? "_independent" : preflight.project,
-          `${crypto.randomUUID()}-${item.name}.md`,
-        )
-      : undefined;
-  try {
-    if (preflight.scope === "project") {
-      lease = await acquireLease(state.deps, preflight.projectPath, leaseHolder, signal);
-      if (
-        !isAbsolute(lease.path) ||
-        !LEASE_ID.test(lease.leaseId) ||
-        lease.leaseHolder !== leaseHolder
-      )
-        throw new Error("treehouse get returned an unrecognized lease");
-      directory = lease.path;
-      await resetHard(state.deps, directory, preflight.starts[item.name] ?? preflight.head, signal);
-    } else {
-      await mkdir(state.neutralRoot, { recursive: true });
-      const base = await realpath(state.neutralRoot);
-      for (const forbidden of preflight.forbiddenRoots) {
-        const placement = relative(forbidden, base);
-        if (!placement || (placement !== ".." && !placement.startsWith(`..${sep}`)))
-          throw new Error(
-            `Neutral working directory base is inside reserved project context: ${forbidden}`,
-          );
-      }
-      const candidate = join(base, `${crypto.randomUUID()}-${item.name}`);
-      await mkdir(candidate);
-      directory = await realpath(candidate);
-      for (const forbidden of preflight.forbiddenRoots) {
-        const placement = relative(forbidden, directory);
-        if (!placement || (placement !== ".." && !placement.startsWith(`..${sep}`)))
-          throw new Error(
-            `Neutral working directory is inside reserved project context: ${forbidden}`,
-          );
-      }
-    }
-    if (!directory) throw new Error("Worker directory was not allocated");
-    if (reportPath) await mkdir(dirname(reportPath), { recursive: true });
-    const label = workerLabel(item.kind, item.name);
-    const space: HerdrSpace =
-      preflight.scope === "project"
-        ? await projectSpace(
-            state,
-            preflight.project,
-            preflight.projectPath,
-            directory,
-            label,
-            signal,
-          )
-        : {
-            workspaceId: preflight.workspace,
-            ...(await createTab(state.deps, preflight.workspace, directory, label, signal)),
-          };
-    workspaceId = space.workspaceId;
-    tabId = space.tabId;
-    paneId = space.paneId;
-    await waitForShell(state.deps, paneId, signal);
-    ompMayHaveStarted = true;
-    await startOmpAgent(state.deps, item.name, paneId, directory, item, signal);
-    prompt = workerPrompt(preflight, context, item, directory, reportPath);
-    await promptAgent(state.deps, paneId, prompt, signal);
-    const agent = await getAgent(state.deps, paneId, signal);
-    if (agent.identity !== "omp")
-      throw new Error(`Unexpected Herdr agent identity: ${agent.identity || "missing"}`);
-    const record = workerRecord(
-      agent.status === "blocked" ? "blocked" : "working",
-      { workspaceId, tabId, paneId },
-      directory,
+  const target = preflight.target;
+  const launchId = record.launch_id!;
+  const options = { controllerId: state.store.controllerId, signal };
+  const hostMutation = <Op extends "worker.allocate" | "worker.bind-agent" | "worker.release">(
+    op: Op,
+    args: HostArgs[Op],
+    acquired?: (result: HostResult<Op>) => void,
+  ) =>
+    serializeSpaces(state, target, () =>
+      runLaunchOperation(
+        state,
+        prepareLaunchOperation(state, record, "helper", op, args),
+        (operationId) =>
+          callMachine(state.api, preflight.resolved, op, args, { ...options, operationId }),
+        acquired,
+      ),
     );
-    adoptWorker(state, record, agent.status);
-    return { ...publicRecord(record), ...(originWarning ? { origin_warning: originWarning } : {}) };
+  let allocated = false;
+  let topologyAttempted = false;
+  try {
+    try {
+      await getAgent(state.deps, target, record.agent_name, { signal });
+      throw new Error("Controller-qualified agent alias is already in use");
+    } catch (error) {
+      const detail = machineError(error, "herdr");
+      if (detail.code !== "RESOURCE_NOT_FOUND") throw error;
+    }
+    record.phase = "allocating";
+    persist(state, record);
+    const resource = await hostMutation(
+      "worker.allocate",
+      {
+        launchId,
+        kind: item.kind,
+        scope: preflight.scope,
+        ...(preflight.scope === "project"
+          ? {
+              projectPath: preflight.projectPath,
+              sourceHead: record.source_head!,
+            }
+          : {}),
+        forbiddenRoots: preflight.forbiddenRoots,
+      } as HostArgs["worker.allocate"],
+      (resource) => {
+        allocated = true;
+        if (resource.scope === "project") {
+          record.worktree = resource.directory.path;
+          record.lease_id = resource.lease.leaseId;
+          record.lease_holder = resource.lease.leaseHolder;
+        } else record.working_directory = resource.directory.path;
+        record.report_source_path = resource.reportSourcePath;
+        persist(state, record);
+      },
+    );
+    const directory = resource.directory.path;
+    const configuration: ConfigurationContext = {
+      ...preflight.selected.configuration_context,
+      cwd: directory,
+    };
+    const models = await selectedModels(
+      state.api,
+      { ...preflight.selected, configuration_context: configuration },
+      signal,
+    );
+    const choice = await effectiveWorkerChoice(models, configuration, item, signal);
+    record.model = choice.model;
+    record.thinking = choice.thinking;
+    record.configuration_context = models.context;
+    record.prompt = workerPrompt(preflight, context, item, directory, record.report_source_path);
+    persist(state, record);
+    if (record.report_path) await mkdir(dirname(record.report_path), { recursive: true });
+    record.phase = "opening_space";
+    persist(state, record);
+    topologyAttempted = true;
+    const label = workerLabel(item.kind, item.name);
+    let workspace: string | undefined;
+    if (preflight.scope === "independent") {
+      workspace = await runLaunchOperation(
+        state,
+        prepareLaunchOperation(state, record, "herdr", "research.open", {
+          target,
+          directory: target.neutralRoot,
+          label: "research",
+        }),
+        () => researchSpace(state, target, { signal }),
+        (id) => {
+          record.workspace_id = id;
+          persist(state, record);
+        },
+      );
+    }
+    await runLaunchOperation(
+      state,
+      prepareLaunchOperation(state, record, "herdr", "worker.open", {
+        target,
+        directory,
+        workspace,
+        label,
+      }),
+      async () =>
+        preflight.scope === "project"
+          ? projectSpace(
+              state,
+              target,
+              preflight.project,
+              preflight.projectPath,
+              directory,
+              label,
+              { signal },
+            )
+          : {
+              workspaceId: workspace!,
+              ...(await createTab(state.deps, target, workspace!, directory, label, { signal })),
+            },
+      (space) => {
+        record.workspace_id = space.workspaceId;
+        record.tab_id = space.tabId;
+        record.pane_id = space.paneId;
+        persist(state, record);
+      },
+    );
+    await waitForShell(state.deps, target, record.pane_id!, { signal });
+    record.phase = "starting_agent";
+    persist(state, record);
+    await runLaunchOperation(
+      state,
+      prepareLaunchOperation(state, record, "herdr", "agent.start", {
+        target,
+        alias: record.agent_name,
+        pane: record.pane_id,
+        directory,
+        choice,
+      }),
+      () =>
+        startOmpAgent(state.deps, target, record.agent_name!, record.pane_id!, directory, choice, {
+          signal,
+        }),
+    );
+    const agent = await getAgent(state.deps, target, record.pane_id, { signal });
+    // OMP exposes a future session filename before creating it. Bind terminal ownership now;
+    // S7 must confirm a materialized session reference in a later revision before helper reads.
+    record.agent_binding = agentBinding(
+      target,
+      { ...agent, sessionPath: undefined },
+      resource.directory,
+      {
+        name: record.agent_name!,
+        paneId: record.pane_id!,
+        tabId: record.tab_id!,
+        workspaceId: record.workspace_id!,
+      },
+      1,
+    );
+    persist(state, record);
+    await hostMutation("worker.bind-agent", { launchId, binding: record.agent_binding });
+    record.phase = "submitting_prompt";
+    persist(state, record);
+    await runLaunchOperation(
+      state,
+      prepareLaunchOperation(state, record, "herdr", "agent.prompt", {
+        target,
+        binding: record.agent_binding,
+        prompt: record.prompt,
+      }),
+      () => promptAgent(state.deps, target, record.pane_id, record.prompt!, { signal }),
+    );
+    const observed = await getAgent(state.deps, target, record.pane_id, { signal });
+    agentBinding(
+      target,
+      observed,
+      resource.directory,
+      {
+        name: record.agent_name!,
+        paneId: record.pane_id!,
+        tabId: record.tab_id!,
+        workspaceId: record.workspace_id!,
+      },
+      1,
+    );
+    // An idle startup is not completion evidence; supervision reconciles without replaying.
+    if (observed.status === "working" || observed.status === "blocked") {
+      record.status = observed.status === "blocked" ? "blocked" : "working";
+      record.phase = "running";
+      adoptWorker(state, record, observed.status);
+    } else {
+      persist(state, record);
+      watchWorker(state, record);
+    }
   } catch (error) {
-    let failure = errorMessage(error);
-    let retain = ompMayHaveStarted;
-    if (!ompMayHaveStarted) {
+    record.error = errorMessage(error);
+    const operations = state.store.operations({ name: record.name, launchId: record.launch_id });
+    const uncertain = operations.some((op) => op.state === "uncertain");
+    if (!topologyAttempted && !uncertain) {
       try {
-        if (workspaceId && tabId)
-          await closeWorkerSpace(
-            state.deps,
-            { scope: preflight.scope, workspace_id: workspaceId, tab_id: tabId },
-            signal,
-          );
-        // Never return a lease while its Herdr shell might still be using the checkout.
-        if (lease) await returnLease(state.deps, lease, signal);
-        else if (directory) await rm(directory, { recursive: true });
+        if (allocated)
+          await hostMutation("worker.release", {
+            launchId,
+            proof: "discard",
+            herdrClosed: true,
+            ...(record.lease_id
+              ? { leaseId: record.lease_id, leaseHolder: record.lease_holder }
+              : {}),
+          });
+        state.records.delete(record.name);
+        state.store.delete(record.name);
+        return { ...launchResult(record, preflight), status: "failed" };
       } catch (cleanupError) {
-        retain = true;
-        failure += `; cleanup failed: ${errorMessage(cleanupError)}`;
+        record.error += `; unused resource release failed: ${errorMessage(cleanupError)}`;
       }
     }
-    if (retain && directory && workspaceId && tabId && paneId) {
-      const record = workerRecord("failed", { workspaceId, tabId, paneId }, directory, failure);
-      state.records.set(item.name, record);
-      persist(state, record);
-      return {
-        ...publicRecord(record),
-        ...(originWarning ? { origin_warning: originWarning } : {}),
-      };
-    }
-    return {
-      kind: item.kind,
-      ...(preflight.scope === "independent"
-        ? { scope: "independent" }
-        : { project: preflight.project, delivery_base: preflight.head }),
-      name: item.name,
-      ...(item.role ? { role: item.role } : {}),
-      ...(item.model ? { model: item.model } : {}),
-      ...(item.thinking ? { thinking: item.thinking } : {}),
-      status: "failed",
-      ...(directory
-        ? preflight.scope === "independent"
-          ? { working_directory: directory }
-          : { worktree: directory, lease_id: lease?.leaseId }
-        : {}),
-      ...(tabId ? { workspace_id: workspaceId, tab_id: tabId } : {}),
-      ...(paneId ? { pane_id: paneId } : {}),
-      ...(item.pushTo ? { push_to: item.pushTo } : {}),
-      ...(reportPath
-        ? {
-            report_path: reportPath,
-            ...(preflight.scope === "project" ? { local_changes: preflight.localChanges } : {}),
-          }
-        : {}),
-      error: failure,
-      ...(originWarning ? { origin_warning: originWarning } : {}),
-    };
+    persist(state, record);
+    watchWorker(state, record);
   }
+  return launchResult(record, preflight);
+}
 
-  function workerRecord(
-    status: WorkerRecord["status"],
-    space: HerdrSpace,
-    directory: string,
-    error?: string,
-  ): WorkerRecord {
-    return {
-      scope: preflight.scope,
-      kind: item.kind,
-      name: item.name,
-      role: item.role,
-      model: item.model,
-      thinking: item.thinking,
-      status,
-      workspace_id: space.workspaceId,
-      tab_id: space.tabId,
-      pane_id: space.paneId,
-      ...(preflight.scope === "project"
-        ? {
-            project: preflight.project,
-            projectPath: preflight.projectPath,
-            worktree: directory,
-            lease_id: lease!.leaseId,
-            lease_holder: lease!.leaseHolder,
-            delivery_base: preflight.starts[item.name] ?? preflight.head,
-            branch: preflight.branch,
-            start_from: item.startFrom,
-            push_to: item.pushTo,
-            hold: item.hold,
-            local_changes: item.kind === "scout" ? preflight.localChanges : undefined,
-          }
-        : { working_directory: directory }),
-      report_path: reportPath,
-      // Stored so a dead or wedged worker can be relaunched with its original assignment.
-      prompt,
-      error,
-      generation: 0,
-    };
-  }
+export function workerRecord(
+  state: WorkerState,
+  preflight: LaunchPreflight,
+  item: TaskItem,
+  launchId: string,
+  root: string,
+  context: string,
+): WorkerRecord {
+  return {
+    scope: preflight.scope,
+    kind: item.kind,
+    name: item.name,
+    role: item.role,
+    controller_id: state.store.controllerId,
+    launch_id: launchId,
+    target: preflight.target,
+    agent_name: agentName(state.store.controllerId, launchId),
+    status: "starting",
+    phase: "preflighted",
+    generation: 0,
+    worker_config_path: preflight.target.workerConfig.path,
+    worker_config_sha256: preflight.target.workerConfig.sha256,
+    configuration_context: preflight.selected.configuration_context,
+    ...preflight.choices[item.name],
+    // The original assignment survives a crash before the cwd-specific prompt can be built.
+    prompt: context ? `${context}\n\n${item.task}` : item.task,
+    ...(preflight.scope === "project"
+      ? {
+          project: preflight.project,
+          projectPath: preflight.projectPath,
+          project_path_key: preflight.projectPathKey,
+          source_head: preflight.starts[item.name],
+          delivery_base: preflight.starts[item.name],
+          branch: preflight.branch,
+          start_from: item.startFrom,
+          push_to: item.pushTo,
+          hold: item.hold,
+          local_changes: item.kind === "scout" ? preflight.localChanges : undefined,
+        }
+      : {}),
+    report_path:
+      item.kind === "scout"
+        ? join(
+            root,
+            ".omp",
+            "reports",
+            preflight.scope === "project" ? preflight.project : "_independent",
+            `${launchId}-${item.name}.md`,
+          )
+        : undefined,
+  };
+}
+
+function launchResult(record: WorkerRecord, preflight: LaunchPreflight): Record<string, unknown> {
+  return {
+    ...publicRecord(record),
+    machine: preflight.target.machineId,
+    session: preflight.target.session,
+    phase: record.phase,
+    launch_id: record.launch_id,
+    agent_name: record.agent_name,
+    source_head: record.source_head,
+    report_source_path: record.report_source_path,
+    ...(preflight.scope === "project" && preflight.originWarnings[record.name]
+      ? { origin_warning: preflight.originWarnings[record.name] }
+      : {}),
+  };
 }
 
 const taskTool: ToolFactory = (pi) => {
@@ -531,7 +727,7 @@ const taskTool: ToolFactory = (pi) => {
     loadMode: "essential",
     approval: "exec",
     description:
-      "Launch visible OMP workers for one scope per call: implementation or scout workers in a registered project, or scouts with scope independent. Use for authorized project changes, and for investigation that should run as its own durable-report scout. Per task: role picks an OMP model role, or model picks an exact provider/id from the OMP model catalog with an optional :level thinking suffix (not both); startFrom a local branch; pushTo delivers to a remote branch instead of fast-forwarding locally; hold stops at status ready for review until workers land. A result carries origin_warning when its start is behind its remote. Returns after launch; completion wakes this session.",
+      "Launch visible OMP workers for one scope and machine per call. Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
     parameters: z.union([
       z
         .object({
@@ -571,6 +767,7 @@ const taskTool: ToolFactory = (pi) => {
       z
         .object({
           scope: z.literal("independent"),
+          machine: z.string().optional(),
           context: z.string(),
           tasks: z
             .array(

@@ -1,7 +1,22 @@
 import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
-import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join } from "node:path";
-import { mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { dirname, join, posix, resolve, win32 } from "node:path";
+import { mkdir, open, rename, rm } from "node:fs/promises";
+import {
+  callMachine,
+  machineError,
+  resolveMachine,
+  validateBinding,
+  type ResolvedMachine,
+} from "../../runtime/machines";
+import { canonicalPath } from "../../runtime/host-paths";
+import {
+  normalizeProjectRegistry,
+  readProjectRegistry,
+  type ProjectEntry,
+  type ProjectRegistry,
+  type RegistryRead,
+} from "../../runtime/project-registry";
 import {
   errorMessage,
   NAME,
@@ -10,55 +25,10 @@ import {
   type ToolAPI,
   type ToolFactory,
 } from "../../runtime/shared";
+import { requireOwnership, stateFor } from "./workers";
 
-type Exec = ToolAPI["exec"];
-
-async function runCommand(
-  exec: Exec,
-  command: string,
-  args: string[],
-  cwd: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  signal?.throwIfAborted();
-  const result = await exec(command, args, { cwd, signal });
-  signal?.throwIfAborted();
-  if (result.code !== 0)
-    throw new Error(
-      `${command} ${args.join(" ")} failed: ${
-        (result.stderr || result.stdout).trim() || `exit ${result.code}`
-      }`,
-    );
-  return result.stdout.trim();
-}
-
-export async function readProjects(
-  root: string,
-  signal?: AbortSignal,
-): Promise<Record<string, string>> {
-  signal?.throwIfAborted();
-  let raw: string;
-  try {
-    raw = await readFile(join(root, ".omp", "projects.json"), "utf8");
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return {};
-    throw error;
-  }
-  signal?.throwIfAborted();
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error("Malformed .omp/projects.json");
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
-    throw new Error("Malformed .omp/projects.json");
-  for (const [name, path] of Object.entries(parsed)) {
-    if (!NAME.test(name) || typeof path !== "string")
-      throw new Error("Malformed .omp/projects.json");
-  }
-  return parsed as Record<string, string>;
+export async function readProjects(root: string, signal?: AbortSignal): Promise<ProjectRegistry> {
+  return (await readProjectRegistry(root, signal)).registry;
 }
 
 export function validateName(name: string, kind: string): void {
@@ -66,164 +36,300 @@ export function validateName(name: string, kind: string): void {
     throw new Error(`Invalid ${kind} name: ${name}`);
 }
 
-async function directory(path: string, kind: string, signal?: AbortSignal): Promise<string> {
-  signal?.throwIfAborted();
-  const input = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
-  if (!isAbsolute(input)) throw new Error(`${kind} must be absolute or start with ~/`);
-  const canonical = await realpath(input);
-  signal?.throwIfAborted();
-  if (!(await stat(canonical)).isDirectory())
-    throw new Error(`${kind} must be a directory: ${canonical}`);
-  return canonical;
-}
-
-async function newPath(path: string, signal?: AbortSignal): Promise<string> {
-  signal?.throwIfAborted();
-  const input = path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
-  if (!isAbsolute(input)) throw new Error("Project path must be absolute or start with ~/");
-  const parent = await realpath(dirname(input));
-  signal?.throwIfAborted();
-  return join(parent, basename(input));
-}
-
-async function readRoot(root: string, signal?: AbortSignal): Promise<string> {
-  signal?.throwIfAborted();
-  let configured: string;
+// Supervisor ownership excludes other processes; this queue excludes concurrent calls without a crash-stale disk lock.
+const writers = new Map<string, Promise<void>>();
+async function mutateRegistry<T>(
+  pi: ToolAPI,
+  signal: AbortSignal | undefined,
+  work: (read: RegistryRead) => Promise<T>,
+): Promise<T> {
+  const state = stateFor(pi);
+  requireOwnership(state);
+  const root = resolve(pi.cwd);
+  const previous = writers.get(root) ?? Promise.resolve();
+  let release!: () => void;
+  const current = new Promise<void>((done) => {
+    release = done;
+  });
+  writers.set(root, current);
+  await previous;
   try {
-    configured = (await readFile(join(root, ".omp", "projects-root"), "utf8")).trim();
-  } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT")
-      throw new Error("No projects root configured; use projects.set-root first");
-    throw error;
+    signal?.throwIfAborted();
+    requireOwnership(state);
+    return await work(await readProjectRegistry(root, signal));
+  } finally {
+    release();
+    if (writers.get(root) === current) writers.delete(root);
   }
-  if (!configured) throw new Error("Malformed .omp/projects-root");
-  return directory(configured, "Configured projects root", signal);
-}
-
-async function writeRoot(root: string, path: string, signal?: AbortSignal): Promise<string> {
-  const canonical = await directory(path, "Projects root", signal);
-  const destination = join(root, ".omp", "projects-root");
-  await mkdir(dirname(destination), { recursive: true });
-  signal?.throwIfAborted();
-  const temp = `${destination}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temp, `${canonical}\n`, { flag: "wx" });
-  await rename(temp, destination);
-  return canonical;
 }
 
 async function writeProjects(
-  root: string,
-  projects: Record<string, string>,
+  pi: ToolAPI,
+  registry: ProjectRegistry,
   signal?: AbortSignal,
 ): Promise<void> {
-  const path = join(root, ".omp", "projects.json");
-  await mkdir(dirname(path), { recursive: true });
   signal?.throwIfAborted();
-  const sorted = Object.fromEntries(
-    Object.entries(projects).sort(([a], [b]) => a.localeCompare(b)),
-  );
-  const temp = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
-  await writeFile(temp, `${JSON.stringify(sorted, null, 2)}\n`, { flag: "wx" });
-  await rename(temp, path);
+  requireOwnership(stateFor(pi));
+  // Pending legacy identities stay absent; requiring every disk online would lose migrations.
+  const normalized = normalizeProjectRegistry(registry).registry;
+  const sort = <T>(entries: Record<string, T>) =>
+    Object.fromEntries(Object.entries(entries).sort(([a], [b]) => a.localeCompare(b)));
+  const sorted = { version: 2, projects: sort(normalized.projects), roots: sort(normalized.roots) };
+  const destination = join(pi.cwd, ".omp", "projects.json");
+  await mkdir(dirname(destination), { recursive: true });
+  const temporary = `${destination}.${randomUUID()}.tmp`;
+  try {
+    const file = await open(temporary, "wx", 0o600);
+    try {
+      await file.writeFile(`${JSON.stringify(sorted, null, 2)}\n`);
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+    signal?.throwIfAborted();
+    requireOwnership(stateFor(pi));
+    await rename(temporary, destination);
+    await rm(join(pi.cwd, ".omp", "projects-root"), { force: true });
+  } finally {
+    await rm(temporary, { force: true });
+  }
 }
 
-function projectResult(projects: Record<string, string>): CustomToolResult {
-  const items = Object.entries(projects)
+function projectResult(registry: ProjectRegistry, machine = "local"): CustomToolResult {
+  const items = Object.entries(registry.projects)
+    .filter(([, entry]) => entry.machine === machine)
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, path]) => ({ name, path }));
-  return text(`Registered projects:\n${JSON.stringify(items, null, 2)}`, items);
+    .map(([name, entry]) => ({
+      name,
+      machine: entry.machine,
+      path: entry.path,
+      ...(entry.pathKey
+        ? { path_key: entry.pathKey }
+        : { issues: ["Pending local validation; path identity is unknown"] }),
+      ...(entry.binding ? { binding: entry.binding } : {}),
+    }));
+  const root = Object.hasOwn(registry.roots, machine) ? registry.roots[machine] : undefined;
+  const issue =
+    root && !root.pathKey
+      ? `\nProjects root ${root.path}: pending local validation; path identity is unknown.`
+      : "";
+  return text(
+    `Registered projects on ${machine}:\n${JSON.stringify(items, null, 2)}${issue}`,
+    items,
+  );
+}
+
+function projectEntry(
+  resolved: ResolvedMachine,
+  path: { path: string; pathKey: string },
+): ProjectEntry {
+  if (!resolved.binding) return { machine: "local", ...path };
+  const { sshTarget, session, hostId } = resolved.binding;
+  return { machine: resolved.machine.machineId, ...path, binding: { sshTarget, session, hostId } };
+}
+
+async function assertUnique(
+  pi: ToolAPI,
+  registry: ProjectRegistry,
+  candidate: ProjectEntry,
+  hostId: string,
+  name: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  let localHostId = candidate.machine === "local" ? hostId : undefined;
+  for (const [otherName, other] of Object.entries(registry.projects)) {
+    if (otherName === name) continue;
+    if (other.machine === "local" && !localHostId)
+      localHostId = (
+        await resolveMachine(pi, "local", { controllerId: stateFor(pi).store.controllerId, signal })
+      ).host.hostId;
+    if ((other.binding?.hostId ?? localHostId) !== hostId) continue;
+    let key = other.pathKey;
+    if (!key && other.machine === "local") {
+      try {
+        key = (await canonicalPath(other.path)).pathKey;
+      } catch {
+        continue;
+      }
+    }
+    if (key === candidate.pathKey)
+      throw new Error(`Project root already registered as ${otherName} on the same host.`);
+  }
 }
 
 const projectsTool: ToolFactory = (pi) => {
   const z = pi.zod;
-
+  const machine = z.string().min(1).optional();
+  const runnableName = projectNameSchema(z).refine(
+    (name) => name !== "_independent",
+    "_independent is reserved for independent scout reports",
+  );
+  const parameters = z.union([
+    z.object({ op: z.literal("list"), machine }).strict(),
+    z
+      .object({
+        op: z.literal("add"),
+        name: runnableName,
+        path: z.string().min(1),
+        machine,
+      })
+      .strict(),
+    z
+      .object({
+        op: z.literal("create"),
+        name: runnableName,
+        path: z.string().optional(),
+        machine,
+      })
+      .strict(),
+    z.object({ op: z.literal("remove"), name: projectNameSchema(z) }).strict(),
+    z.object({ op: z.literal("set-root"), path: z.string().min(1), machine }).strict(),
+  ]);
   return {
     name: "projects",
     label: "Projects",
     loadMode: "essential",
     approval: "write",
     description:
-      "Create, register, and manage local Git projects used by visible worker tasks. Configure a projects root before creating at the default destination. Removal unregisters only; it never deletes a repository.",
-    parameters: z.union([
-      z.object({ op: z.literal("list") }).strict(),
-      z.object({ op: z.literal("add"), name: projectNameSchema(z), path: z.string() }).strict(),
-      z
-        .object({
-          op: z.literal("create"),
-          name: projectNameSchema(z),
-          path: z.string().optional(),
-        })
-        .strict(),
-      z.object({ op: z.literal("remove"), name: projectNameSchema(z) }).strict(),
-      z.object({ op: z.literal("set-root"), path: z.string() }).strict(),
-    ]),
-    execute: async (_id, params, signal) => {
-      const root = pi.cwd;
-      const exec = pi.exec;
+      "Register and create Git projects on one machine. Omitted machine means local; remote values are saved Herdr IDs or unique labels. List filters by saved ID without connecting. Removal unregisters only; repositories, workers, and reports remain.",
+    parameters,
+    execute: async (_id, input, signal) => {
       try {
-        signal?.throwIfAborted();
-        const projects = await readProjects(root, signal);
-        if (params.op === "list") return projectResult(projects);
-        if (params.op === "set-root") {
-          const path = await writeRoot(root, params.path, signal);
-          return text(`Projects root: ${path}`, { path });
-        }
-
-        if (params.op === "remove") {
-          if (!(params.name in projects))
-            throw new Error(`Unknown registered project: ${params.name}`);
-          delete projects[params.name];
-          await writeProjects(root, projects, signal);
-          return projectResult(projects);
-        }
-        if (params.op === "create") {
-          if (projects[params.name])
+        const params = parameters.parse(input);
+        if (params.op === "list")
+          return projectResult(await readProjects(pi.cwd, signal), params.machine);
+        return await mutateRegistry(pi, signal, async ({ registry }) => {
+          if (params.op === "remove") {
+            const entry = registry.projects[params.name];
+            if (!entry || !Object.hasOwn(registry.projects, params.name))
+              throw new Error(`Unknown registered project: ${params.name}`);
+            delete registry.projects[params.name];
+            await writeProjects(pi, registry, signal);
+            return projectResult(registry, entry.machine);
+          }
+          const options = { controllerId: stateFor(pi).store.controllerId, signal };
+          const resolved = await resolveMachine(pi, params.machine, options);
+          const machineId = resolved.machine.machineId;
+          if (params.op === "set-root") {
+            const validated = await callMachine(
+              pi,
+              resolved,
+              "path.validate",
+              { path: params.path, kind: "projects_root" },
+              options,
+            );
+            const entry = projectEntry(resolved, validated.path);
+            registry.roots[machineId] = {
+              path: entry.path,
+              pathKey: entry.pathKey,
+              ...(entry.binding ? { binding: entry.binding } : {}),
+            };
+            await writeProjects(pi, registry, signal);
+            const details = { machine: machineId, path: entry.path, path_key: entry.pathKey };
+            return text(`Projects root on ${machineId}: ${entry.path}`, details);
+          }
+          const existing = Object.hasOwn(registry.projects, params.name)
+            ? registry.projects[params.name]
+            : undefined;
+          if (existing && (params.op === "create" || existing.machine !== machineId))
             throw new Error(`Project name already registered: ${params.name}`);
-          const target = params.path
-            ? await newPath(params.path, signal)
-            : join(await readRoot(root, signal), params.name);
-          const other = Object.entries(projects).find(([, path]) => path === target);
-          if (other) throw new Error(`Project path already registered as ${other[0]}`);
-          await mkdir(target);
-          await runCommand(exec, "git", ["init"], target, signal);
-          await runCommand(
-            exec,
-            "git",
-            ["commit", "--allow-empty", "-m", "Initial commit"],
-            target,
-            signal,
-          );
-          projects[params.name] = target;
-          await writeProjects(root, projects, signal);
-          return projectResult(projects);
-        }
-
-        const canonical = await directory(params.path, "Project path", signal);
-        const top = await runCommand(
-          exec,
-          "git",
-          ["rev-parse", "--show-toplevel"],
-          canonical,
-          signal,
-        );
-        const gitRoot = await realpath(top);
-        if (gitRoot !== canonical) throw new Error(`Path is not an exact Git root: ${canonical}`);
-        if (projects[params.name] && projects[params.name] !== canonical)
-          throw new Error(`Project name already registered: ${params.name}`);
-        const other = Object.entries(projects).find(
-          ([name, path]) => name !== params.name && path === canonical,
-        );
-        if (other) throw new Error(`Project path already registered as ${other[0]}`);
-        if (projects[params.name] !== canonical) {
-          projects[params.name] = canonical;
-          await writeProjects(root, projects, signal);
-        }
-        return projectResult(projects);
+          if (existing?.binding)
+            validateBinding(
+              resolved.machine,
+              { machineId: existing.machine, ...existing.binding },
+              resolved.host.hostId,
+            );
+          let path = params.path;
+          if (params.op === "create" && !path) {
+            const configured = Object.hasOwn(registry.roots, machineId)
+              ? registry.roots[machineId]
+              : undefined;
+            if (!configured)
+              throw new Error(
+                `No projects root configured on ${machineId}; use projects.set-root first`,
+              );
+            if (configured.binding) {
+              const bound = await resolveMachine(pi, machineId, {
+                ...options,
+                binding: { machineId, ...configured.binding },
+              });
+              if (bound.host.hostId !== resolved.host.hostId)
+                throw new Error("Projects root helper identity changed during creation.");
+            }
+            const validated = await callMachine(
+              pi,
+              resolved,
+              "path.validate",
+              { path: configured.path, kind: "projects_root" },
+              options,
+            );
+            if (configured.pathKey && configured.pathKey !== validated.path.pathKey)
+              throw new Error(
+                `Configured projects root identity changed on ${machineId}; set-root again before creating.`,
+              );
+            path = (resolved.host.os === "win32" ? win32 : posix).join(
+              validated.path.path,
+              params.name,
+            );
+          }
+          let validated;
+          if (params.op === "create") {
+            const operationId = randomUUID();
+            try {
+              validated = (
+                await callMachine(
+                  pi,
+                  resolved,
+                  "project.create",
+                  { path: path!, registrationId: randomUUID() },
+                  { ...options, operationId },
+                )
+              ).project;
+            } catch (error) {
+              return text(
+                `Project creation on ${machineId} failed; inspect ${path}. No partial repository was removed. ${errorMessage(error)}`,
+                {
+                  machine: machineId,
+                  path,
+                  operation_id: operationId,
+                  error: machineError(error, "helper"),
+                },
+                true,
+              );
+            }
+          } else {
+            validated = (
+              await callMachine(
+                pi,
+                resolved,
+                "path.validate",
+                { path: path!, kind: "git_root" },
+                options,
+              )
+            ).path;
+          }
+          const entry = projectEntry(resolved, validated);
+          if (existing && existing.path !== entry.path && existing.pathKey !== entry.pathKey)
+            throw new Error(`Project name already registered: ${params.name}`);
+          try {
+            await assertUnique(pi, registry, entry, resolved.host.hostId, params.name, signal);
+            registry.projects[params.name] = entry;
+            await writeProjects(pi, registry, signal);
+          } catch (error) {
+            if (params.op === "create")
+              return text(
+                `Created repository retained at ${entry.path} on ${machineId}, but registration failed: ${errorMessage(error)}`,
+                { machine: machineId, path: entry.path, error: machineError(error, "controller") },
+                true,
+              );
+            throw error;
+          }
+          return projectResult(registry, machineId);
+        });
       } catch (error) {
-        return text(errorMessage(error), undefined, true);
+        return text(errorMessage(error), { error: machineError(error, "controller") }, true);
       }
     },
   };
 };
-
 export default projectsTool;

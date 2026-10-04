@@ -1,25 +1,88 @@
 import type { ExtensionAPI, CustomToolResult, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { ConfigurationContext, ExecutionTarget, StoredTarget } from "./execution";
+import type { HostRuntime } from "./host";
+import type { OmpContextResolver } from "./omp";
+import type {
+  AgentBinding,
+  DeliveryReceipt,
+  HostError,
+  ReleaseReceipt,
+  ReportReceipt,
+} from "./helper-protocol";
+
+export type StdioProcess = {
+  stdin: { write(data: string | Uint8Array): void | Promise<void>; end(): void | Promise<void> };
+  stdout: AsyncIterable<Uint8Array>;
+  stderr: AsyncIterable<Uint8Array>;
+  exited: Promise<number>;
+  kill(): void;
+};
+export type StdioSpawn = (
+  command: string[],
+  options: { signal?: AbortSignal; cwd?: string },
+) => StdioProcess;
+export type WorkerPhase =
+  | "preflighted"
+  | "allocating"
+  | "opening_space"
+  | "starting_agent"
+  | "submitting_prompt"
+  | "running"
+  | "collecting_report"
+  | "delivering"
+  | "retained"
+  | "cleaning"
+  | "finished";
+export type CleanupPhase =
+  | "not_started"
+  | "closing_space"
+  | "space_closed"
+  | "releasing_directory"
+  | "directory_released"
+  | "complete";
+export type ChannelConnection = {
+  state: "unknown" | "online" | "offline" | "attention";
+  lastSuccessAt?: string;
+  error?: HostError;
+};
+export type WorkerConnection = {
+  herdr: ChannelConnection;
+  helper: ChannelConnection;
+  state: ChannelConnection["state"];
+};
+export type TerminalOutcome =
+  | { kind: "completed_with_report"; receipt: ReportReceipt }
+  | { kind: "merged" | "pushed" | "no_changes"; receipt: DeliveryReceipt }
+  | { kind: "closed" | "discarded"; authorizedAt: string; releaseReceipt?: ReleaseReceipt };
 
 export type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
 export type RuntimeDeps = {
   exec: ExtensionAPI["exec"];
   sendMessage(message: string, options: { triggerTurn: true; deliverAs: "nextTurn" }): void;
   logger: ExtensionAPI["logger"];
+  spawnStdio?: StdioSpawn;
 };
 export type ToolAPI = RuntimeDeps & {
   cwd: string;
   zod: ExtensionAPI["zod"];
   env?: Record<string, string | undefined>;
   neutralRoot?: string;
+  target?: ExecutionTarget;
+  localHostRuntime?: HostRuntime;
+  resolveOmpContext?: OmpContextResolver;
 };
 export type ToolFactory = (api: ToolAPI) => ToolDefinition<any, any>;
 
 export type ProjectParams =
-  | { op: "list" }
-  | { op: "add"; name: string; path: string }
-  | { op: "create"; name: string; path?: string }
+  | { op: "list"; machine?: string }
+  | { op: "add"; name: string; path: string; machine?: string }
+  | { op: "create"; name: string; path?: string; machine?: string }
   | { op: "remove"; name: string }
-  | { op: "set-root"; path: string };
+  | { op: "set-root"; path: string; machine?: string };
+export type MachinesParams =
+  | { op: "list" }
+  | { op: "status"; machine?: string }
+  | { op: "check" | "set-default"; machine: string };
 export type TaskKind = "implementation" | "scout";
 export type TaskItem = {
   kind: TaskKind;
@@ -38,7 +101,7 @@ export type ProjectTaskParams = { project: string; context: string; tasks: TaskI
 export type IndependentTaskParams = { scope: "independent"; context: string; tasks: TaskItem[] };
 export type TaskParams = ProjectTaskParams | IndependentTaskParams;
 export type WorkersParams =
-  | { op: "list" }
+  | { op: "list"; machine?: string }
   | { op: "read"; names: string[]; lines?: number }
   | { op: "send"; names: string[]; message: string }
   | { op: "interrupt"; names: string[] }
@@ -60,11 +123,14 @@ export type ProjectPreflight = {
   starts: Record<string, string>;
   /** Per-worker note when its starting branch lacks commits its remote already has. */
   originWarnings: Record<string, string>;
+  target?: ExecutionTarget;
+  projectPathKey?: string;
 };
 export type IndependentPreflight = {
   scope: "independent";
   workspace: string;
   forbiddenRoots: string[];
+  target?: ExecutionTarget;
 };
 export type Preflight = ProjectPreflight | IndependentPreflight;
 export type WorkerRecord = {
@@ -76,10 +142,10 @@ export type WorkerRecord = {
   role?: string;
   model?: string;
   thinking?: string;
-  status: "working" | "blocked" | "interrupted" | "ready" | "failed";
-  workspace_id: string;
-  tab_id: string;
-  pane_id: string;
+  status: "starting" | "working" | "blocked" | "interrupted" | "ready" | "failed";
+  workspace_id?: string;
+  tab_id?: string;
+  pane_id?: string;
   worktree?: string;
   working_directory?: string;
   lease_id?: string;
@@ -95,6 +161,25 @@ export type WorkerRecord = {
   error?: string;
   launched_at?: string;
   updated_at?: string;
+  controller_id?: string;
+  launch_id?: string;
+  target?: StoredTarget;
+  project_path_key?: string;
+  agent_name?: string;
+  agent_binding?: AgentBinding;
+  phase?: WorkerPhase;
+  connection?: WorkerConnection;
+  /** Lifecycle transition time; updated_at also advances for connection and receipt writes. */
+  status_changed_at?: string;
+  source_head?: string;
+  worker_config_path?: string;
+  worker_config_sha256?: string;
+  configuration_context?: ConfigurationContext;
+  report_source_path?: string;
+  report_receipt?: ReportReceipt;
+  delivery_receipt?: DeliveryReceipt;
+  cleanup_phase?: CleanupPhase;
+  terminal_outcome?: TerminalOutcome;
   generation: number;
   watch?: AbortController;
 };

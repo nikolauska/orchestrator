@@ -2,6 +2,7 @@ import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { errorMessage, projectNameSchema, text, type ToolFactory } from "../../runtime/shared";
+import { readProvenance } from "../../runtime/report-transfer";
 
 export async function listReports(
   project: string | undefined,
@@ -38,6 +39,7 @@ export async function listReports(
                   name: file.name,
                   modified_at: info.mtime.toISOString(),
                   mtime: info.mtimeMs,
+                  ...(await readProvenance(path)),
                 };
               }),
           );
@@ -96,7 +98,7 @@ export async function getReport(
   const path = matches[0]!;
   const content = await readFile(path, "utf8");
   signal?.throwIfAborted();
-  return text(content, { path });
+  return text(content, { path, ...(await readProvenance(path)) });
 }
 
 const reportsTool: ToolFactory = (pi) => {

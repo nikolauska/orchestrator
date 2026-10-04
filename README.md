@@ -1,21 +1,34 @@
 # Orchestrator
 
-Orchestrator is a root [Oh My Pi](https://github.com/can1357/oh-my-pi) workspace for safely coordinating work across local Git projects and project-independent research.
+Orchestrator is a root [Oh My Pi](https://github.com/can1357/oh-my-pi) workspace for coordinating work across machine-bound Git projects and project-independent research. Projects can live locally or on saved [Herdr](https://herdr.dev) SSH machines.
 
-It exists so parallel OMP work stays visible and recoverable: each project gets its own [Herdr](https://herdr.dev) space with every active worker's isolated Treehouse worktree nested under it, independent research runs in a shared research space, research produces a durable report, worker state survives an OMP restart, and blocked or failed work is retained rather than silently discarded.
+Each project worker runs in an isolated Treehouse worktree on the project's machine, visible in a Herdr space nested under the project's space. Independent scouts run in disposable directories as tabs in that machine's shared research space. Worker state survives a controller restart; blocked, failed, offline, or uncertain work stays recorded for recovery.
 
 ## Why use it
 
 - **One clear scope per request.** Work targets one registered project or independent research, never an accidental mix of both.
-- **Safe project changes.** Implementation workers commit and, by default, fast-forward the registered project's current branch only after successful completion.
-- **Research that survives the session.** Scouts write durable reports that remain available after their disposable worktree spaces or research tabs close.
-- **Evidence retained for recovery.** Dirty checkouts, delivery conflicts, failed launches, and uncertain cleanup keep their worker space and working directory for inspection.
+- **Machine-owned project changes.** A project belongs to exactly one machine. Implementation workers commit and, by default, fast-forward that machine's registered checkout. There are no replicas or cross-host Git transfers.
+- **Research that survives the session.** Remote reports are collected into the controller's durable archive with provenance before successful completion. Collected reports remain readable offline.
+- **Evidence retained for recovery.** Dirty checkouts, delivery conflicts, failed launches, connection loss, and uncertain cleanup retain work instead of silently discarding it.
 
-## Requirements
+## Requirements and verification status
 
-- `omp` and `herdr` with `worktree open` support on `PATH` (verified with Herdr 0.9.1)
-- `treehouse` and `git` on `PATH` for registered-project work
-- Herdr's OMP integration installed before starting the root session:
+- Herdr **0.9.3+** on the controller and execution hosts, with compatible live server capabilities, `worktree open`, and OMP integration version **3+**. Matching client/server version strings are not required.
+- OMP on the controller and each worker host, with the host's own login, model roles, and configuration.
+- Git and Treehouse with durable leases, JSON status, and guarded return for project work. Independent scouts do not require Git or Treehouse.
+- For remote work: user-enrolled Herdr profiles, ordinary noninteractive SSH key authentication, and the manually installed/configured host helper. Herdr terminal routing and helper SSH are separate channels.
+
+Linux, macOS, and native Windows are supported targets; the controller is also intended to run natively on Windows. Support is not the same as completed platform verification:
+
+| Surface                       | Exercised evidence                                                                                                                     | Still required                                                      |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Linux local host/runtime      | Existing local behavior tests and recorded compiled-helper stdio, Git/Treehouse delivery, and report-stream checks                     | Integrated real remote-host smoke                                   |
+| Remote transport and recovery | Isolated lost-acknowledgement tests; native Windows remote from WSL with rebuilt helper and concurrent scout/implementation settlement | Linux/macOS SSH hosts and remaining real failure/recovery scenarios |
+| Native Windows controller     | Platform-aware paths and isolated behavior coverage                                                                                    | Native controller run                                               |
+
+Native Windows remote execution has been exercised from a WSL controller, including report collection/acknowledgement, target-owned delivery and cleanup after the Windows regression fixes. Native Windows controller, native macOS and Linux-SSH remotes remain unexercised. See [CONTRIBUTING.md](CONTRIBUTING.md) for the operational proof still required. The [manual provisioning guide](docs/remote-helper.md) covers enrollment, SSH trust, helper installation, host setup, and the known external OMP/mise Windows background Wait limitation; Orchestrator never installs remote tools or copies secrets/configuration for you.
+
+Before starting a local root session, install Herdr's OMP integration yourself:
 
 ```sh
 herdr integration install omp
@@ -56,23 +69,49 @@ herdr integration install omp
 
 Orchestrator chooses the appropriate worker and scope from your request. Independent research runs outside registered projects in a separate disposable directory; authenticated external access requires explicit instructions.
 
+### Remote projects and independent research
+
+Provision the host first using [docs/remote-helper.md](docs/remote-helper.md), then ask:
+
+> List saved machines and check the prerequisites on `workbox`.
+
+> Register `/srv/projects/my-app` on machine `workbox` as `my-app-workbox`. It exists only on that host.
+
+> Register `C:\Users\Niko\src\my-app` on machine `windows-host` as `my-app-windows`.
+
+> Fix the login timeout in `my-app-workbox`, but hold the work for review on its host.
+
+> Use `workbox` as the default machine for future independent research.
+
+> Run this independent research on `windows-host` for this launch only.
+
+Project launches always use their registration's machine; they have no machine override. Independent scouts use the saved default (initially `local`) or a per-launch `machine`. The same repository on two machines is two separately named projects. Never register one physical checkout twice through WSL `/mnt/c/...` and Windows `C:\...`: those environments have different helper identities, so duplicate detection cannot protect that case.
+
 ## Delivery and recovery
 
-Project implementation workers commit before completion. Successful work fast-forwards the registered project's current branch by default. A task may instead push to a named remote branch, or be held for review until you ask Orchestrator to land it. A launch warns when a worker starts from a branch that is behind its remote.
+Project implementation workers commit before completion. Default delivery advances only the registered checkout on the project's machine, with a clean checkout on the expected named branch. `startFrom` names a committed branch on that host; default delivery requires it to be checked out. A moved target permits one rebase and another fast-forward attempt; conflicts, dirtiness, or branch changes retain work.
 
-Orchestrator does not discard uncertain work. A dirty checkout, conflict, failed launch, blocked worker, uncommitted implementation change, or unresolved scout-report cleanup retains the relevant worker space and working location for recovery. Closing a worker that still has undelivered work is refused unless you explicitly ask to discard it.
+`hold: true` stops changed work at `ready`; review its diff on the worker's host and request `workers land` when ready. `pushTo` explicitly publishes from that host's worker checkout to an origin branch instead of advancing the registered checkout. It is never an implicit cross-host transfer or authorization to open a pull/merge request. A launch warns if its source is behind its upstream without fetching.
 
-Worker state lives in `.omp/orchestrator.db`, so workers survive an OMP restart: the next session reconnects to running workers and finishes delivery for any that completed meanwhile. Only one OMP session supervises workers at a time; another session opened in this repository can list workers and read their screens, and takes over once the supervising session exits.
+Offline does not mean dead. Herdr can remain reachable while helper SSH is unavailable, or vice versa. Restore the original profile, session, helper identity, and authentication; relaunch stays on the same machine and directory. Lost prompt, delivery, or push acknowledgements are reconciled, not blindly replayed. Closing unfinished work requires explicit authority; `discard: true` cannot safely release an offline host and never deletes collected reports.
 
-Workers start with the settings overlay in [`.omp/worker-config.yml`](.omp/worker-config.yml), which keeps unattended workers off interactive prompts without changing your own OMP configuration. A blocked worker's question reaches the root session with its screen, and supervision continues if you answer it directly in the worker's tab.
+Worker state lives in the controller's `.omp/orchestrator.db`. The next supervising OMP session reconnects to retained workers and resumes from recorded evidence. Only one session supervises; another can list workers and read fresh screens. An unavailable screen is reported as unavailable, not treated as stalled progress.
+
+Without a manual helper configuration, local execution keeps per-user state under `~/.omp/orchestrator/`: `host-id` holds the persistent local host identity, `host-runtime/` holds operation records and staged local scout reports, and `independent-workers/` holds disposable independent working directories. A controller-host `~/.omp/orchestrator/helper.json` (or the file selected by `OMP_ORCHESTRATOR_HELPER_CONFIG`) instead defines the `local` identity, runtime and working roots, query settings, and approved project roots. Do not add, remove, or change that configuration while local workers are retained; changing their host identity or roots can prevent recovery. See the [helper guide](docs/remote-helper.md#local-runtime-state) for paths and details.
+
+Workers use the approved [`.omp/worker-config.yml`](.omp/worker-config.yml) bytes on their own host, without changing your OMP configuration. Blocked questions reach the controller, and answers typed directly in the worker's tab remain authoritative.
+
+Local and remote scouts write to host staging at `report_source_path`. Supervision collects and acknowledges reports under controller-local `.omp/reports/<project>/` or `.omp/reports/_independent/`, with a `<report-stem>.meta.json` provenance sidecar, before completion and release. Ordinary close retains an uncollectable unfinished report unless you explicitly authorize discard. Migrated local reports are validated in place and remain archive-owned.
 
 ## Models and usage
 
-Each worker runs on an OMP model role or on an exact model from `omp models`, optionally with a thinking level. Tell Orchestrator which models you prefer or want avoided, and for what kind of work; it remembers them in `.omp/model-preferences.json`, a local file ignored by Git, and uses them when choosing worker models. A model you name for a specific task still wins. Before launching larger work, Orchestrator checks provider usage with `omp usage`, which covers every account OMP itself signs in with. When a role's provider is running low, it moves the work to an equally strong model on a provider with room and tells you; it never quietly switches to a weaker model.
+Each worker uses a role or an exact model from its selected host's OMP catalog, optionally with a thinking level. Model preferences live in one controller-local `.omp/model-preferences.json` map, not a map per host. `models` and `usage` accept either `project` or `machine`; neither means local, not the independent default. Query the project before project launches, or the chosen machine before independent launches. Accounts and roles belong to that host/profile/worker configuration; quota is never added across machines. An unavailable host or model is not a reason to fall back to the controller. A model named for one task wins over remembered preferences; a quota-driven swap must stay equally strong and be explained.
+
+Catalog and usage queries use the local runtime or remote helper without Herdr launch preflight. They work while the terminal server is unavailable, provided the selected host's OMP, approved settings and helper channel are available. Worker launches still require Herdr.
 
 ## Development
 
-See [`AGENTS.md`](AGENTS.md) for orchestration rules and [`CONTRIBUTING.md`](CONTRIBUTING.md) for repository structure and development conventions.
+See [`docs/domain.md`](docs/domain.md) for tool behavior, [`AGENTS.md`](AGENTS.md) for orchestration rules, and [`CONTRIBUTING.md`](CONTRIBUTING.md) for repository structure, validation, and the remaining real-host acceptance checks.
 
 ## Test
 

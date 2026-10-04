@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { getReport, listReports } from "../.omp/extensions/orchestrator/reports";
 import { cleanup, fixtureRoot } from "./test-helpers";
+import { provenancePath } from "../.omp/runtime/report-transfer";
 
 afterEach(cleanup);
 
@@ -40,4 +41,19 @@ describe("reports", () => {
     await expect(getReport("../outside.md", root)).rejects.toThrow("listed name");
     await expect(getReport("missing.md", root)).rejects.toThrow("Unknown report");
   });
+});
+
+test("reads reports without metadata and flags invalid metadata without hiding Markdown", async () => {
+  const root = await reportsRoot({
+    "app/old.md": "# Old\n",
+    "app/broken.md": "# Still readable\n",
+  });
+  const path = join(root, ".omp", "reports", "app", "broken.md");
+  await writeFile(provenancePath(path), '{"version":42}');
+  const rows = (await listReports("app", root)).details as Array<Record<string, unknown>>;
+  expect(rows.find((row) => row.name === "old.md")).not.toHaveProperty("provenance");
+  expect(rows.find((row) => row.name === "broken.md")!.issues).toHaveLength(1);
+  const report = await getReport("app/broken.md", root);
+  expect(report.content[0]).toMatchObject({ text: "# Still readable\n" });
+  expect(report.details).toMatchObject({ path, issues: expect.any(Array) });
 });

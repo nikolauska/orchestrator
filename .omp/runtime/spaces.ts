@@ -1,64 +1,85 @@
-import { mkdir } from "node:fs/promises";
+import { targetKey, type ExecutionTarget } from "./execution";
 import {
   createWorkspace,
   listWorkspaces,
   openWorktree,
   renameWorkspace,
+  type HerdrOptions,
   type HerdrSpace,
 } from "./herdr";
 import { errorMessage, type RuntimeDeps } from "./shared";
 
 export const RESEARCH_SPACE = "research";
+export type SpaceState = { deps: RuntimeDeps };
+const queues = new WeakMap<SpaceState, Map<string, Promise<void>>>();
 
-type SpaceState = { deps: RuntimeDeps; neutralRoot: string; spaceQueue: Promise<void> };
-
-/** Runs Herdr space lookups and creation one at a time so parallel launches never create duplicate spaces. */
-function serializeSpaces<T>(state: SpaceState, work: () => Promise<T>): Promise<T> {
-  const result = state.spaceQueue.then(work);
-  state.spaceQueue = result.then(
+export function serializeSpaces<T>(
+  state: SpaceState,
+  target: ExecutionTarget,
+  work: () => Promise<T>,
+): Promise<T> {
+  let targets = queues.get(state);
+  if (!targets) {
+    targets = new Map();
+    queues.set(state, targets);
+  }
+  const key = targetKey(target);
+  const result = (targets.get(key) ?? Promise.resolve()).then(work);
+  const settled = result.then(
     () => undefined,
     () => undefined,
   );
+  targets.set(key, settled);
+  void settled.then(() => {
+    if (targets.get(key) === settled) targets.delete(key);
+  });
   return result;
 }
 
-export function researchSpace(state: SpaceState, signal?: AbortSignal): Promise<string> {
-  return serializeSpaces(state, async () => {
-    const existing = (await listWorkspaces(state.deps, signal)).find(
+export function researchSpace(
+  state: SpaceState,
+  target: ExecutionTarget,
+  options: HerdrOptions = {},
+): Promise<string> {
+  return serializeSpaces(state, target, async () => {
+    const existing = (await listWorkspaces(state.deps, target, options)).find(
       (workspace) => workspace.label === RESEARCH_SPACE,
     );
     if (existing) return existing.workspaceId;
-    await mkdir(state.neutralRoot, { recursive: true });
-    return (await createWorkspace(state.deps, state.neutralRoot, RESEARCH_SPACE, signal))
-      .workspaceId;
+    // Provisioning belongs to the host; never mkdir a remote path on the controller.
+    return (
+      await createWorkspace(state.deps, target, target.neutralRoot.path, RESEARCH_SPACE, options)
+    ).workspaceId;
   });
 }
 
 export function projectSpace(
   state: SpaceState,
+  target: ExecutionTarget,
   project: string,
   projectPath: string,
   checkout: string,
   label: string,
-  signal?: AbortSignal,
+  options: HerdrOptions = {},
 ): Promise<HerdrSpace> {
-  return serializeSpaces(state, async () => {
+  return serializeSpaces(state, target, async () => {
     const before = new Set(
-      (await listWorkspaces(state.deps, signal)).map((workspace) => workspace.workspaceId),
+      (await listWorkspaces(state.deps, target, options)).map((workspace) => workspace.workspaceId),
     );
-    const space = await openWorktree(state.deps, projectPath, checkout, signal);
+    const space = await openWorktree(state.deps, target, projectPath, checkout, options);
     try {
-      await renameWorkspace(state.deps, space.workspaceId, label, signal);
-      const parent = (await listWorkspaces(state.deps, signal)).find(
+      await renameWorkspace(state.deps, target, space.workspaceId, label, options);
+      const parent = (await listWorkspaces(state.deps, target, options)).find(
         (workspace) => workspace.repoRoot === projectPath && !workspace.linked,
       );
-      // Herdr names a parent it creates after the checkout folder; a space the user already had keeps its label.
+      // Newly created parents use the registration name; existing user labels are preserved.
       if (parent && !before.has(parent.workspaceId))
-        await renameWorkspace(state.deps, parent.workspaceId, project, signal);
+        await renameWorkspace(state.deps, target, parent.workspaceId, project, options);
     } catch (error) {
-      // The name is cosmetic; the worker space is already open and must still be tracked.
+      // Cosmetic failure must not lose the resource IDs needed to retain the opened space.
       state.deps.logger.warn?.("Project space rename failed", {
         project,
+        target: targetKey(target),
         error: errorMessage(error),
       });
     }
@@ -66,7 +87,6 @@ export function projectSpace(
   });
 }
 
-/** The kind prefix tells implementation work from research at a glance in Herdr's sidebar. */
 export function workerLabel(kind: string, name: string): string {
   return `${kind === "scout" ? "scout" : "impl"}·${name}`;
 }
