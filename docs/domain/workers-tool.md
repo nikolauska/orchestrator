@@ -59,6 +59,8 @@ The tool sends a message only to named workers. It is intended for requirement c
 
 A message is rejected when a named worker is unknown, duplicated, or invalid. This prevents a correction from being silently sent to the wrong worker.
 
+A worker that is blocked on a dialog in its own tab, such as a Claude Code permission prompt, cannot receive a message. The send is refused without typing anything and without changing the worker's status, and the user answers the dialog in the worker's tab.
+
 After a new message, an earlier completed turn does not count as completion of the new request, even if the terminal still looks idle or the send response is lost.
 
 ## Interrupting and relaunching

@@ -1675,6 +1675,15 @@ async function releaseWorker(
   return receipt;
 }
 
+function blockedSendRefusal(record: WorkerRecord): Record<string, unknown> {
+  return {
+    ...publicRecord(record),
+    send: "refused",
+    reason:
+      "Worker is blocked on a prompt in its own tab (such as a permission dialog); nothing was typed. The user must answer it in the worker's tab.",
+  };
+}
+
 async function sendWorker(
   state: WorkerState,
   record: WorkerRecord,
@@ -1689,6 +1698,10 @@ async function sendWorker(
         reason: "Settled worker is awaiting cleanup; finish cleanup before launching new work",
       };
     const before = await verifyWorkerAgent(state, record, signal);
+    // A blocked agent is showing its own dialog (e.g. a permission prompt); Herdr refuses to type
+    // into it, so refuse before touching supervision state instead of reporting a fresh turn.
+    if (before.status === "blocked") return blockedSendRefusal(record);
+    const previous = { status: record.status, phase: record.phase };
     record.generation++;
     record.watch?.abort();
     checkpoint(state, record, "prompt.baseline", { completionSeq: before.completionSeq });
@@ -1699,12 +1712,22 @@ async function sendWorker(
       binding: record.agent_binding,
       prompt: message,
     });
-    await runLaunchOperation(state, intent, () =>
-      promptAgent(state.deps, record.target as ExecutionTarget, record.pane_id, message, {
-        signal,
-        kind: record.agent_kind ?? "omp",
-      }),
-    );
+    try {
+      await runLaunchOperation(state, intent, () =>
+        promptAgent(state.deps, record.target as ExecutionTarget, record.pane_id, message, {
+          signal,
+          kind: record.agent_kind ?? "omp",
+        }),
+      );
+    } catch (error) {
+      // The agent became blocked after the check above; Herdr sent no input, so the earlier turn
+      // is still the one running and the connection is healthy.
+      if (!(error instanceof HerdrError) || error.herdrCode !== "agent_blocked") throw error;
+      record.phase = previous.phase;
+      setStatus(state, record, previous.status);
+      watchWorker(state, record);
+      return blockedSendRefusal(record);
+    }
     const agent = await verifyWorkerAgent(state, record, signal);
     if (promptCompleted(state, record, agent)) setStatus(state, record, "working");
     observe(state, record, agent.status, true);

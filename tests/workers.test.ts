@@ -300,6 +300,36 @@ describe("launch and control", () => {
     expect(fake.waits.has("pane:beta")).toBe(true);
   });
 
+  test("refuses to prompt a blocked worker without restarting its turn", async () => {
+    const { fake, instance } = await launchedPair();
+    fake.status.set("pane:alpha", "blocked");
+    const result = await instance.runWorkers({ op: "send", names: ["alpha"], message: "1" });
+    const [outcome] = result.details as Array<Record<string, unknown>>;
+    expect(outcome).toMatchObject({ send: "refused" });
+    expect(outcome!.reason).toContain("user must answer it in the worker's tab");
+    expect(outcome!.status).not.toBe("starting");
+    expect(outcome!.phase).not.toBe("submitting_prompt");
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.command === "herdr" && call.args.includes("prompt") && call.args.includes("1"),
+      ),
+    ).toBe(false);
+  });
+
+  test("restores supervision when the worker blocks just before a prompt", async () => {
+    const { fake, instance } = await launchedPair();
+    fake.promptBlockedOnce = true;
+    const result = await instance.runWorkers({ op: "send", names: ["alpha"], message: "1" });
+    const [outcome] = result.details as Array<Record<string, unknown>>;
+    expect(outcome).toMatchObject({ send: "refused" });
+    expect(outcome!.status).not.toBe("starting");
+    expect(outcome!.phase).not.toBe("submitting_prompt");
+    expect(outcome!.reason).toContain("nothing was typed");
+    expect((outcome!.connection as { state: string }).state).toBe("online");
+    expect(fake.waits.has("pane:alpha")).toBe(true);
+  });
+
   test("retains an uncertain unstructured stalled submission without duplicating input", async () => {
     const { root, project } = await fixtureRoot();
     const fake = new FakeExec(project);

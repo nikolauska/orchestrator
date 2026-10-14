@@ -154,6 +154,8 @@ export class FakeExec {
   gitInitFails = false;
   gitCommitFails = false;
   promptStallsOnce = false;
+  /** Simulates the agent hitting a dialog between the controller's check and its prompt. */
+  promptBlockedOnce = false;
   shellWaitFails = false;
   spaceCloseFails = false;
   agentIdentity = "omp";
@@ -207,6 +209,12 @@ export class FakeExec {
       if (this.promptStallsOnce && !this.#reportedPromptStall) {
         this.#reportedPromptStall = true;
         return this.#fail("agent_prompt_stalled");
+      }
+      // Real Herdr rejects a prompt to a blocked agent before typing anything.
+      if (this.promptBlockedOnce || this.status.get(pane) === "blocked") {
+        this.promptBlockedOnce = false;
+        this.status.set(pane, "blocked");
+        return this.#fail('{"error":{"code":"agent_blocked","message":"agent is blocked"}}');
       }
       this.status.set(pane, "working");
       return this.#ok("{}");
