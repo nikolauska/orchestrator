@@ -1,4 +1,4 @@
-// Must be OMP's own zod: schemas here are composed with store/registry schemas inside the loaded extension, and a second zod copy breaks OMP's extension loader.
+// Runtime schemas compose only with each other, so they share this one omptype copy; tool parameters use the harness-injected zod instead.
 import * as z from "@oh-my-pi/omptype/zod";
 
 // Error-only identity before helper configuration is available; never a machine binding.
