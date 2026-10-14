@@ -359,7 +359,11 @@ function workerPrompt(
   const lead = context ? `${context}\n\n` : "";
   if (item.kind === "implementation")
     return `${lead}You are an unattended worker in an isolated worktree created for this assignment. You are done when the change works: implement it, run or exercise the changed behavior and the relevant local checks, fix failures your change causes, and commit every assignment change. Keep going until then rather than stopping for review; the worktree and its local checks are disposable, so run, fix, and rerun them without asking. Ask only when a missing decision would materially change the outcome, and mention optional extras as follow-ups instead of adding them. Work directly without delegating to subagents.\n\n${item.task}`;
-  const finish = `You are done when the authoritative, non-empty standalone Markdown report is at ${reportPath} and your final message states the concise conclusion. Record whatever helps the reader (investigation, findings, evidence, recommendations, unresolved decisions) without fixed headings; unresolved decisions go in the report and do not block completion. Work directly without delegating to subagents.`;
+  // Claude Code cannot parse long shell heredocs for its permission check and stops to ask in
+  // an unattended tab; its Write tool is allowed outside the worktree without asking.
+  const writer =
+    item.agent === "claude" ? " Write the report with the Write tool, not a shell command." : "";
+  const finish = `You are done when the authoritative, non-empty standalone Markdown report is at ${reportPath} and your final message states the concise conclusion.${writer} Record whatever helps the reader (investigation, findings, evidence, recommendations, unresolved decisions) without fixed headings; unresolved decisions go in the report and do not block completion. Work directly without delegating to subagents.`;
   if (preflight.scope === "project") {
     const revision = preflight.starts[item.name] ?? preflight.head;
     const excluded = preflight.localChanges

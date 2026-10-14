@@ -87,6 +87,29 @@ describe("Claude Code workers", () => {
     ]);
   });
 
+  test("tell Claude scouts to write the report with the Write tool", async () => {
+    const { fake, instance } = await claudeFixture();
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "shared",
+      tasks: [
+        { kind: "scout", name: "look", task: "Investigate", agent: "claude" },
+        { kind: "implementation", name: "alpha", task: "A", agent: "claude" },
+      ],
+    });
+    expect(result.isError).toBeUndefined();
+    const prompts = new Map(
+      fake.calls
+        .filter((call) => call.command === "herdr" && call.args.includes("prompt"))
+        .map((call) => [
+          call.args[call.args.indexOf("prompt") + 1],
+          call.args[call.args.indexOf("prompt") + 2],
+        ]),
+    );
+    expect(prompts.get("pane:look")).toContain("Write the report with the Write tool");
+    expect(prompts.get("pane:alpha")).not.toContain("Write tool");
+  });
+
   test("require Herdr's Claude integration before allocating anything", async () => {
     const { fake, instance } = await claudeFixture("omp: current (v10) (host overlay)");
     const result = await instance.runTask({
