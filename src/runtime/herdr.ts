@@ -354,8 +354,11 @@ export async function getAgent(
   if (!agent || typeof agent !== "object")
     throw new HerdrError("PROTOCOL_MISMATCH", "Herdr returned unrecognized agent state");
   const session = valueAt(agent, ["agent_session"]);
+  const identity = stringAt(agent, ["agent"]) ?? "";
+  // Herdr names Claude Code sessions only by ID; the host resolves the ID to its transcript.
+  const sessionKind = identity === "claude" ? "id" : "path";
   return {
-    identity: stringAt(agent, ["agent"]) ?? "",
+    identity,
     status: stringAt(agent, ["agent_status"]) ?? "",
     name: stringAt(agent, ["name"]),
     paneId: stringAt(agent, ["pane_id"]),
@@ -363,7 +366,8 @@ export async function getAgent(
     workspaceId: stringAt(agent, ["workspace_id"]),
     cwd: stringAt(agent, ["cwd"]),
     incarnation: stringAt(agent, ["terminal_id"]),
-    sessionPath: stringAt(session, ["kind"]) === "path" ? stringAt(session, ["value"]) : undefined,
+    sessionPath:
+      stringAt(session, ["kind"]) === sessionKind ? stringAt(session, ["value"]) : undefined,
     completionSeq: numberAt(agent, "completion_seq"),
     stateChangeSeq: numberAt(agent, "state_change_seq"),
     interactiveReady:

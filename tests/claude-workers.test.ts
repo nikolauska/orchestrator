@@ -67,6 +67,8 @@ describe("Claude Code workers", () => {
     fake.settle("alpha");
     await eventually(() => expect(messages.length).toBe(1));
     expect(messages[0]!.message).toContain('"status": "merged"');
+    // The final answer comes from the transcript Herdr names only by session ID.
+    expect(messages[0]!.message).toContain("output pane:alpha");
   });
 
   test("keep the host's default model when none is named", async () => {

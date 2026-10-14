@@ -368,6 +368,58 @@ test("session reads require the exact worker binding and survive absent response
   });
 });
 
+test("Claude sessions bind by ID and read the transcript found under the projects root", async () => {
+  const f = await fixture();
+  const launchId = randomUUID();
+  const resource = await f.call(
+    "worker.allocate",
+    { launchId, scope: "independent", kind: "scout", forbiddenRoots: [] },
+    randomUUID(),
+  );
+  const projects = join(f.root, "claude", "projects");
+  f.host.claudeSessionRoots = [projects];
+  const sessionId = randomUUID();
+  const binding: AgentBinding = {
+    revision: 1,
+    identity: "claude",
+    agentName: agentName(f.controllerId, launchId),
+    session: "bound-session",
+    workspaceId: "w",
+    tabId: "t",
+    paneId: "p",
+    cwd: resource.directory,
+    sessionPath: "../../escape",
+  };
+  await expect(
+    f.call("worker.bind-agent", { launchId, binding }, randomUUID()),
+  ).rejects.toMatchObject({ detail: { code: "AGENT_MISMATCH" } });
+  await mkdir(join(projects, "-some-worker-dir"), { recursive: true });
+  await writeFile(
+    join(projects, "-some-worker-dir", `${sessionId}.jsonl`),
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        id: "m1",
+        role: "assistant",
+        content: [{ type: "text", text: "Claude evidence" }],
+      },
+    }) + "\n",
+  );
+  const bound = await f.call(
+    "worker.bind-agent",
+    { launchId, binding: { ...binding, sessionPath: sessionId } },
+    randomUUID(),
+  );
+  expect(bound.binding.sessionPath).toBe(sessionId);
+  expect(await f.call("session.last-response", { launchId, sessionPath: sessionId })).toEqual({
+    text: "Claude evidence",
+  });
+  await rm(join(projects, "-some-worker-dir", `${sessionId}.jsonl`));
+  expect(await f.call("session.last-response", { launchId, sessionPath: sessionId })).toEqual({
+    unavailableReason: "Bound agent session file is unavailable.",
+  });
+});
+
 describe("host ownership and delivery", () => {
   test("reconciliation retires pre-effect interruptions only while holding the ledger lock", async () => {
     const f = await fixture();

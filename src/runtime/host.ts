@@ -1,7 +1,18 @@
 import * as z from "@oh-my-pi/omptype/zod";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { access, lstat, mkdir, open, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
+import {
+  access,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  rmdir,
+  stat,
+} from "node:fs/promises";
 import { constants, existsSync, type BigIntStats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
@@ -1624,7 +1635,8 @@ async function execute(
         );
       if (binding.sessionPath) {
         const sessionPath = await validateSession(runtime, binding.sessionPath, binding.identity);
-        binding.sessionPath = sessionPath.path;
+        // A Claude binding keeps Herdr's session ID so later agent observations still match it.
+        if (binding.identity !== "claude") binding.sessionPath = sessionPath.path;
         worker.sessionIdentity = sessionPath.pathKey;
       } else delete worker.sessionIdentity;
       worker.binding = binding;
@@ -1829,12 +1841,39 @@ function claudeSessionsDir(): string {
   return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
 }
 
+const CLAUDE_SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Find the transcript of a Claude Code session that Herdr names only by ID. */
+async function claudeTranscript(roots: string[], id: string): Promise<string> {
+  // Anything but a UUID could name a file outside the session's project folder.
+  if (!CLAUDE_SESSION_ID.test(id))
+    throw new HostFailure("AGENT_MISMATCH", "Claude Code session reference is not a session ID.");
+  // Claude Code shortens and hashes the folder name of long working directories, so search for
+  // the ID rather than re-deriving the folder from the worker's cwd.
+  for (const root of roots) {
+    let folders;
+    try {
+      folders = await readdir(root, { withFileTypes: true });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") continue;
+      throw error;
+    }
+    for (const folder of folders) {
+      const path = join(root, folder.name, `${id}.jsonl`);
+      if (folder.isDirectory() && existsSync(path)) return path;
+    }
+  }
+  // The session may not have written its transcript yet; callers treat this as unavailable.
+  throw Object.assign(new Error(`Claude Code transcript ${id} does not exist yet`), {
+    code: "ENOENT",
+  });
+}
+
 async function validateSession(
   runtime: HostRuntime,
   value: string,
   kind: AgentBinding["identity"] = "omp",
 ): Promise<HostPath> {
-  const path = await canonicalPath(value);
   let roots: string[];
   if (kind === "claude") roots = runtime.claudeSessionRoots ?? [claudeSessionsDir()];
   else {
@@ -1844,6 +1883,9 @@ async function validateSession(
     });
     roots = runtime.sessionRoots ?? [sessionsDir(configDir)];
   }
+  const path = await canonicalPath(
+    kind === "claude" ? await claudeTranscript(roots, value) : value,
+  );
   for (const root of roots) {
     try {
       await assertContained(root, path, { allowEqual: false });

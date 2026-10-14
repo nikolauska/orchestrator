@@ -3,7 +3,7 @@ import { zod } from "@oh-my-pi/pi-coding-agent";
 import type { ExtensionAPI, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
 import type { SessionReason, ToolOutcome, ToolSpec } from "../src/core/tool";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { HostFailure, nativeAbsolutePath } from "../src/runtime/host-paths";
 import { PROTOCOL, validateHostRequest, type HelloResult } from "../src/runtime/helper-protocol";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -157,6 +157,7 @@ export class FakeExec {
   shellWaitFails = false;
   spaceCloseFails = false;
   agentIdentity = "omp";
+  claudeSessionIds = new Map<string, string>();
   integrationStatus = "omp: current (v10) (host overlay)";
   readonly goneAgents = new Set<string>();
   readonly workspaces: FakeWorkspace[] = [];
@@ -226,9 +227,8 @@ export class FakeExec {
                 ? null
                 : {
                     agent: this.agentIdentity,
-                    kind: "path",
+                    ...(await this.#session(pane)),
                     source: `herdr:${this.agentIdentity}`,
-                    value: await this.#session(pane),
                   },
             },
           },
@@ -263,8 +263,16 @@ export class FakeExec {
     waiter.resolve();
   }
 
-  async #session(pane: string): Promise<string> {
-    const path = join(dirname(this.project), "sessions", `${pane.replace(":", "-")}.jsonl`);
+  // Herdr reports OMP sessions by path but Claude Code sessions only by ID; Claude Code keeps
+  // the transcript in a per-directory folder under its projects root.
+  async #session(pane: string): Promise<{ kind: string; value: string }> {
+    const sessions = join(dirname(this.project), "sessions");
+    let claudeId = this.claudeSessionIds.get(pane);
+    if (this.agentIdentity === "claude" && !claudeId)
+      this.claudeSessionIds.set(pane, (claudeId = randomUUID()));
+    const path = claudeId
+      ? join(sessions, pane.replace(/[^a-zA-Z0-9]/g, "-"), `${claudeId}.jsonl`)
+      : join(sessions, `${pane.replace(":", "-")}.jsonl`);
     const entries = this.sessionEntries.get(pane) ?? [
       { type: "message", message: { role: "user", content: [{ type: "text", text: "task" }] } },
       {
@@ -277,7 +285,7 @@ export class FakeExec {
     ];
     await mkdir(dirname(path), { recursive: true });
     await writeFile(path, entries.map((entry) => JSON.stringify(entry)).join("\n") + "\n");
-    return path;
+    return claudeId ? { kind: "id", value: claudeId } : { kind: "path", value: path };
   }
 
   #git(args: string[], cwd?: string): ExecResult {
