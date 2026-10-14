@@ -36,7 +36,7 @@ herdr integration install omp
 
 ## Quick start
 
-1. Start an OMP session in this repository.
+1. Start an OMP session in this repository, or a Claude Code session as described in [Claude Code as the root session](#claude-code-as-the-root-session).
 2. Tell Orchestrator where a project lives. For example:
 
    > Register the Git repository at `/path/to/my-app` as `my-app`.
@@ -95,13 +95,25 @@ Project implementation workers commit before completion. Default delivery advanc
 
 Offline does not mean dead. Herdr can remain reachable while helper SSH is unavailable, or vice versa. Restore the original profile, session, helper identity, and authentication; relaunch stays on the same machine and directory. Lost prompt, delivery, or push acknowledgements are reconciled, not blindly replayed. Closing unfinished work requires explicit authority; `discard: true` cannot safely release an offline host and never deletes collected reports.
 
-Worker state lives in the controller's `.omp/orchestrator.db`. The next supervising OMP session reconnects to retained workers and resumes from recorded evidence. Only one session supervises; another can list workers and read fresh screens. An unavailable screen is reported as unavailable, not treated as stalled progress.
+Worker state lives in the controller's `.omp/orchestrator.db`. The next supervising session reconnects to retained workers and resumes from recorded evidence. Only one session supervises; another can list workers and read fresh screens. An unavailable screen is reported as unavailable, not treated as stalled progress.
 
 Without a manual helper configuration, local execution keeps per-user state under `~/.omp/orchestrator/`: `host-id` holds the persistent local host identity, `host-runtime/` holds operation records and staged local scout reports, and `independent-workers/` holds disposable independent working directories. A controller-host `~/.omp/orchestrator/helper.json` (or the file selected by `OMP_ORCHESTRATOR_HELPER_CONFIG`) instead defines the `local` identity, runtime and working roots, query settings, and approved project roots. Do not add, remove, or change that configuration while local workers are retained; changing their host identity or roots can prevent recovery. See the [helper guide](docs/remote-helper.md#local-runtime-state) for paths and details.
 
 Workers use the approved [`.omp/worker-config.yml`](.omp/worker-config.yml) bytes on their own host, without changing your OMP configuration. Blocked questions reach the controller, and answers typed directly in the worker's tab remain authoritative.
 
 Local and remote scouts write to host staging at `report_source_path`. Supervision collects and acknowledges reports under controller-local `.omp/reports/<project>/` or `.omp/reports/_independent/`, with a `<report-stem>.meta.json` provenance sidecar, before completion and release. Ordinary close retains an uncollectable unfinished report unless you explicitly authorize discard. Migrated local reports are validated in place and remain archive-owned.
+
+## Claude Code as the root session
+
+Claude Code can run the root session instead of OMP. Workers are still OMP agents, so the requirements above still apply. Start it from this repository:
+
+```sh
+bun run claude
+```
+
+This loads the orchestrator MCP server from `mcp/claude-code.json` and enables it as a Claude Code [channel](https://code.claude.com/docs/en/channels-reference), which is how worker results wake an idle session. Channels are a research preview: a custom channel needs `--dangerously-load-development-channels`, which asks for confirmation at startup, and Team or Enterprise organizations must enable channels. The flag has no effect with `claude -p`. Without the channel, the tools still work but nothing wakes the session; read missed results with `workers events`.
+
+The server is deliberately not in a project `.mcp.json`: OMP also loads that file, and an OMP session would then start a second supervisor.
 
 ## Models and usage
 

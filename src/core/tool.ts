@@ -38,6 +38,9 @@ export type ToolSpec = {
 export type HarnessServices = {
   exec: Exec;
   logger: Logger;
-  /** Delivers a supervision message and wakes the root session for a new turn. */
-  notify(message: string): void;
+  /**
+   * Delivers a supervision message and wakes the root session for a new turn. Returning (or
+   * resolving) means the harness accepted it; throwing (or rejecting) leaves the event pending.
+   */
+  notify(message: string): void | Promise<void>;
 };

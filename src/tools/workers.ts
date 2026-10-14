@@ -75,6 +75,8 @@ export type WorkerState = {
   /** Identifies this session in the store's owner row. */
   token: string;
   owner: boolean;
+  /** Events handed to an asynchronous harness wake but not yet accepted. */
+  delivering: Set<number>;
   localRuntime?: Promise<HostRuntime>;
   reconnect: Map<string, { attempts: number; nextAt: number }>;
 };
@@ -112,6 +114,7 @@ export function stateFor(pi: ToolAPI): WorkerState {
     active: true,
     token: crypto.randomUUID(),
     owner: false,
+    delivering: new Set(),
   };
   states.set(pi, state);
   return state;
@@ -166,7 +169,8 @@ export function notify(
     state.deps.logger.warn?.("Supervisor event could not be recorded", {
       error: errorMessage(error),
     });
-    if (state.active) state.deps.notify(eventMessage(outcome, heading));
+    if (state.active)
+      void Promise.resolve(state.deps.notify(eventMessage(outcome, heading))).catch(() => {});
     return;
   }
   deliver(state, event);
@@ -174,16 +178,28 @@ export function notify(
 
 /** Pending events stay readable through `workers events` and are retried at the next session start. */
 export function deliver(state: WorkerState, event: SupervisorEvent): void {
-  if (!state.active) return;
-  try {
-    state.deps.notify(event.message);
-    state.store.markDelivered([event.id]);
-  } catch (error) {
+  if (!state.active || state.delivering.has(event.id)) return;
+  const failed = (error: unknown) =>
     state.deps.logger.warn?.("Supervisor event delivery failed; it stays pending", {
       event: event.id,
       error: errorMessage(error),
     });
+  let accepted: void | Promise<void>;
+  try {
+    accepted = state.deps.notify(event.message);
+  } catch (error) {
+    failed(error);
+    return;
   }
+  if (!(accepted instanceof Promise)) {
+    state.store.markDelivered([event.id]);
+    return;
+  }
+  state.delivering.add(event.id);
+  accepted
+    .then(() => state.store.markDelivered([event.id]), failed)
+    .catch(failed)
+    .finally(() => state.delivering.delete(event.id));
 }
 
 export function flushEvents(state: WorkerState): void {
@@ -272,7 +288,7 @@ export function requireOwnership(state: WorkerState): void {
   if (claimOwnership(state)) return;
   const owner = state.store.owner();
   throw new Error(
-    `Another OMP session (pid ${owner?.pid}) has supervised these workers since ${owner?.claimed_at}; this session is read-only until that session exits`,
+    `Another orchestrator session (pid ${owner?.pid}) has supervised these workers since ${owner?.claimed_at}; this session is read-only until that session exits`,
   );
 }
 
@@ -1233,7 +1249,7 @@ export async function runWorkers(
         .map(publicRecord);
       const heading = owner
         ? "Visible workers"
-        : `Visible workers (read-only; OMP session pid ${state.store.owner()?.pid} supervises them)`;
+        : `Visible workers (read-only; orchestrator session pid ${state.store.owner()?.pid} supervises them)`;
       return text(`${heading}:\n${JSON.stringify(records, null, 2)}`, records);
     }
     if (params.op === "events") {
@@ -2486,7 +2502,7 @@ const workersTool: ToolFactory = (pi) => {
     label: "Workers",
     approval: "exec",
     description:
-      "Supervise workers launched by orchestrator_task; use it instead of hub. Ops: list; events returns supervisor notifications not yet delivered to this session (all: recent history too); read recent screen lines; send an answer or changed requirement; interrupt a running turn (send resumes it); relaunch a dead or stuck worker in its same worktree with a recovery note; land a held implementation that is ready; close workers. close refuses implementation work that is uncommitted or undelivered unless discard is true. Only the supervising OMP session can change workers; other sessions can list and read.",
+      "Supervise workers launched by orchestrator_task; use it instead of hub. Ops: list; events returns supervisor notifications not yet delivered to this session (all: recent history too); read recent screen lines; send an answer or changed requirement; interrupt a running turn (send resumes it); relaunch a dead or stuck worker in its same worktree with a recovery note; land a held implementation that is ready; close workers. close refuses implementation work that is uncommitted or undelivered unless discard is true. Only the supervising session can change workers; other sessions can list and read.",
     parameters: z.union([
       z.object({ op: z.literal("list"), machine: z.string().optional() }).strict(),
       z.object({ op: z.literal("events"), all: z.boolean().optional() }).strict(),

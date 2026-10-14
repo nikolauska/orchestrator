@@ -8,6 +8,9 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 .omp/extensions/orchestrator/index.ts               OMP extension discovery shim; re-exports src/adapters/omp.ts
 src/core/tool.ts                                   Harness-neutral tool contract and injected harness services
 src/adapters/omp.ts                                OMP adapter: tool registration, session events, nextTurn wake
+src/adapters/mcp.ts                                MCP adapter for Claude Code: flattened input schemas, channel wake
+src/adapters/mcp-main.ts                           Stdio entry spawned through mcp/claude-code.json
+mcp/claude-code.json                               Claude Code MCP config; never a project .mcp.json, which OMP also loads
 src/tools/index.ts                                 Builds every tool around one shared API object
 src/tools/*.ts                                     Tool factories returning harness-neutral specs
 src/runtime/shared.ts                             Shared types and helpers
@@ -46,6 +49,7 @@ tests/task.test.ts                                 Task tool behavior tests
 tests/workers.test.ts                              Workers tool behavior tests
 tests/usage.test.ts                                Usage summary behavior tests
 tests/models.test.ts                               Models tool behavior tests
+tests/mcp.test.ts                                  MCP adapter protocol, schema and channel tests
 ```
 
 ## Conventions
