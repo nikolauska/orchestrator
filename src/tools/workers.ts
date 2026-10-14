@@ -1,15 +1,15 @@
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { ToolOutcome } from "../core/tool";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { lstat, readFile } from "node:fs/promises";
-import { targetKey, type ExecutionTarget, type HostPath } from "../../runtime/execution";
-import { canonicalPath, HostFailure } from "../../runtime/host-paths";
+import { targetKey, type ExecutionTarget, type HostPath } from "../runtime/execution";
+import { canonicalPath, HostFailure } from "../runtime/host-paths";
 import {
   adoptLegacyLocalRecord,
   createLocalHostRuntime,
   dispatchHostRequest,
   type HostRuntime,
-} from "../../runtime/host";
+} from "../runtime/host";
 import {
   PROTOCOL,
   type HostArgs,
@@ -22,10 +22,10 @@ import {
   type DeliveryReceipt,
   validateHostResult,
   hostArgsSchemas,
-} from "../../runtime/helper-protocol";
-import { callHelper } from "../../runtime/remote";
-import { collectReport } from "../../runtime/report-transfer";
-import { listMachines, selectMachine, validateBinding, machineError } from "../../runtime/machines";
+} from "../runtime/helper-protocol";
+import { callHelper } from "../runtime/remote";
+import { collectReport } from "../runtime/report-transfer";
+import { listMachines, selectMachine, validateBinding, machineError } from "../runtime/machines";
 import { prepareLaunchOperation, runLaunchOperation } from "./orchestrator_task";
 import {
   closeWorkerSpace,
@@ -42,9 +42,9 @@ import {
   resolveLocalHerdrTarget,
   HerdrError,
   type HerdrAgent,
-} from "../../runtime/herdr";
-import { projectSpace, researchSpace, workerLabel } from "../../runtime/spaces";
-import { WorkerStore } from "../../runtime/store";
+} from "../runtime/herdr";
+import { projectSpace, researchSpace, workerLabel } from "../runtime/spaces";
+import { WorkerStore } from "../runtime/store";
 import {
   errorMessage,
   NAME,
@@ -57,7 +57,7 @@ import {
   type WorkerRecord,
   type WorkersParams,
   type WorkerConnection,
-} from "../../runtime/shared";
+} from "../runtime/shared";
 
 export type WorkerState = {
   api: ToolAPI;
@@ -150,10 +150,7 @@ export function notify(
   heading = "Visible worker result",
 ): void {
   if (!state.active) return;
-  state.deps.sendMessage(`${heading}:\n${JSON.stringify(outcome, null, 2)}`, {
-    triggerTurn: true,
-    deliverAs: "nextTurn",
-  });
+  state.deps.notify(`${heading}:\n${JSON.stringify(outcome, null, 2)}`);
 }
 
 export function hasWorker(state: WorkerState, name: string): boolean {
@@ -1180,7 +1177,7 @@ export async function runWorkers(
   state: WorkerState,
   params: WorkersParams,
   signal?: AbortSignal,
-): Promise<CustomToolResult> {
+): Promise<ToolOutcome> {
   state.active = true;
   try {
     const owner = claimOwnership(state);
@@ -2440,7 +2437,6 @@ const workersTool: ToolFactory = (pi) => {
   return {
     name: "workers",
     label: "Workers",
-    loadMode: "essential",
     approval: "exec",
     description:
       "Supervise workers launched by orchestrator_task; use it instead of hub. Ops: list; read recent screen lines; send an answer or changed requirement; interrupt a running turn (send resumes it); relaunch a dead or stuck worker in its same worktree with a recovery note; land a held implementation that is ready; close workers. close refuses implementation work that is uncommitted or undelivered unless discard is true. Only the supervising OMP session can change workers; other sessions can list and read.",
@@ -2459,8 +2455,8 @@ const workersTool: ToolFactory = (pi) => {
       z.object({ op: z.literal("land"), names }).strict(),
       z.object({ op: z.literal("close"), names, discard: z.boolean().optional() }).strict(),
     ]),
-    execute: async (_id, params, signal) => runWorkers(state, params as WorkersParams, signal),
-    onSession: (event) => handleSession(state, event.reason),
+    execute: async (params, signal) => runWorkers(state, params as WorkersParams, signal),
+    onSession: (reason) => handleSession(state, reason),
   };
 };
 

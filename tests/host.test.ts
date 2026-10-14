@@ -9,14 +9,14 @@ import {
   dispatchHostRequest,
   nativeExec,
   streamHostReport,
-} from "../.omp/runtime/host";
+} from "../src/runtime/host";
 import {
   canonicalPath,
   assertContained,
   HostFailure,
   nativeAbsolutePath,
   type PathRules,
-} from "../.omp/runtime/host-paths";
+} from "../src/runtime/host-paths";
 import {
   PROTOCOL,
   ReportStreamValidator,
@@ -29,9 +29,9 @@ import {
   type HostResult,
   type ReportFrame,
   type ResultOp,
-} from "../.omp/runtime/helper-protocol";
-import { agentName, type ExecutionTarget } from "../.omp/runtime/execution";
-import type { ExecResult, RuntimeDeps, WorkerRecord } from "../.omp/runtime/shared";
+} from "../src/runtime/helper-protocol";
+import { agentName, type ExecutionTarget } from "../src/runtime/execution";
+import type { ExecResult, RuntimeDeps, WorkerRecord } from "../src/runtime/shared";
 
 const temporaryRoots: string[] = [];
 afterEach(async () => {
@@ -181,7 +181,7 @@ async function fixture() {
       const result = await fixtureExec(command, args, options);
       return { ...result, killed: result.killed ?? false };
     },
-    sendMessage: () => {},
+    notify: () => {},
     logger: {} as RuntimeDeps["logger"],
   };
   const configuration = {

@@ -9,7 +9,7 @@ import {
   runtime as baseRuntime,
   extensionRuntime as baseExtensionRuntime,
 } from "./test-helpers";
-import type { ExecResult } from "../.omp/runtime/shared";
+import type { ExecResult } from "../src/runtime/shared";
 
 export { FakeExec };
 const attached = new WeakSet<FakeExec>();

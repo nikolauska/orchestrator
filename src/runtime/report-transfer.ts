@@ -1,4 +1,4 @@
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 import { createHash, randomUUID } from "node:crypto";
 import { link, lstat, mkdir, open, unlink } from "node:fs/promises";
 import { dirname } from "node:path";

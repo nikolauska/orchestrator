@@ -1,4 +1,4 @@
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { ToolOutcome } from "../core/tool";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { mkdir } from "node:fs/promises";
@@ -12,25 +12,25 @@ import {
   type TaskParams,
   type ToolFactory,
   type WorkerRecord,
-} from "../../runtime/shared";
-import type { ConfigurationContext, ExecutionTarget, HostPath } from "../../runtime/execution";
-import { agentName } from "../../runtime/execution";
-import { canonicalPath } from "../../runtime/host-paths";
-import type { HostArgs, HostResult } from "../../runtime/helper-protocol";
+} from "../runtime/shared";
+import type { ConfigurationContext, ExecutionTarget, HostPath } from "../runtime/execution";
+import { agentName } from "../runtime/execution";
+import { canonicalPath } from "../runtime/host-paths";
+import type { HostArgs, HostResult } from "../runtime/helper-protocol";
 import {
   effectiveWorkerChoice,
   selectedModels,
   type ModelChoice,
   type SelectedOmpContext,
-} from "../../runtime/omp";
+} from "../runtime/omp";
 import {
   callMachine,
   checkMachine,
   machineError,
   resolveMachine,
   type ResolvedMachine,
-} from "../../runtime/machines";
-import type { ControllerOperation } from "../../runtime/store";
+} from "../runtime/machines";
+import type { ControllerOperation } from "../runtime/store";
 import projectsTool, { readProjects, validateName } from "./projects";
 import {
   agentBinding,
@@ -39,8 +39,8 @@ import {
   promptAgent,
   startOmpAgent,
   waitForShell,
-} from "../../runtime/herdr";
-import { projectSpace, researchSpace, serializeSpaces, workerLabel } from "../../runtime/spaces";
+} from "../runtime/herdr";
+import { projectSpace, researchSpace, serializeSpaces, workerLabel } from "../runtime/spaces";
 import {
   adoptWorker,
   handleSession,
@@ -81,7 +81,7 @@ export async function runTask(
   root: string,
   params: LaunchParams,
   signal?: AbortSignal,
-): Promise<CustomToolResult> {
+): Promise<ToolOutcome> {
   state.active = true;
   try {
     // The agent loop validates Zod params, but custom-tool adapters forward them unchanged;
@@ -286,14 +286,7 @@ export async function preflightTask(
     throw new Error("Registered project identity changed during preflight.");
   if (!entry.pathKey) {
     // Reuse the registry writer's lock and atomic migration instead of a second write convention.
-    // This factory does not consume the agent-loop context required by the generic tool type.
-    const executeRegistration = projectsTool(state.api).execute as unknown as (
-      id: string,
-      params: unknown,
-      signal?: AbortSignal,
-    ) => Promise<CustomToolResult>;
-    const result = await executeRegistration(
-      "launch-validation",
+    const result = await projectsTool(state.api).execute(
       { op: "add", name: params.project, path: snapshot.project.path, machine: "local" },
       signal,
     );
@@ -724,7 +717,6 @@ const taskTool: ToolFactory = (pi) => {
   return {
     name: "orchestrator_task",
     label: "Orchestrator task",
-    loadMode: "essential",
     approval: "exec",
     description:
       "Launch visible OMP workers for one scope and machine per call. Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
@@ -786,8 +778,8 @@ const taskTool: ToolFactory = (pi) => {
         })
         .strict(),
     ]),
-    execute: async (_id, params, signal) => runTask(state, pi.cwd, params as TaskParams, signal),
-    onSession: (event) => handleSession(state, event.reason),
+    execute: async (params, signal) => runTask(state, pi.cwd, params as TaskParams, signal),
+    onSession: (reason) => handleSession(state, reason),
   };
 };
 

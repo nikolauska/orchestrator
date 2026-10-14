@@ -1,4 +1,4 @@
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { ToolOutcome } from "../core/tool";
 import { randomUUID } from "node:crypto";
 import { dirname, join, posix, resolve, win32 } from "node:path";
 import { mkdir, open, rename, rm } from "node:fs/promises";
@@ -8,15 +8,15 @@ import {
   resolveMachine,
   validateBinding,
   type ResolvedMachine,
-} from "../../runtime/machines";
-import { canonicalPath } from "../../runtime/host-paths";
+} from "../runtime/machines";
+import { canonicalPath } from "../runtime/host-paths";
 import {
   normalizeProjectRegistry,
   readProjectRegistry,
   type ProjectEntry,
   type ProjectRegistry,
   type RegistryRead,
-} from "../../runtime/project-registry";
+} from "../runtime/project-registry";
 import {
   errorMessage,
   NAME,
@@ -24,7 +24,7 @@ import {
   text,
   type ToolAPI,
   type ToolFactory,
-} from "../../runtime/shared";
+} from "../runtime/shared";
 import { requireOwnership, stateFor } from "./workers";
 
 export async function readProjects(root: string, signal?: AbortSignal): Promise<ProjectRegistry> {
@@ -95,7 +95,7 @@ async function writeProjects(
   }
 }
 
-function projectResult(registry: ProjectRegistry, machine = "local"): CustomToolResult {
+function projectResult(registry: ProjectRegistry, machine = "local"): ToolOutcome {
   const items = Object.entries(registry.projects)
     .filter(([, entry]) => entry.machine === machine)
     .sort(([a], [b]) => a.localeCompare(b))
@@ -188,12 +188,11 @@ const projectsTool: ToolFactory = (pi) => {
   return {
     name: "projects",
     label: "Projects",
-    loadMode: "essential",
     approval: "write",
     description:
       "Register and create Git projects on one machine. Omitted machine means local; remote values are saved Herdr IDs or unique labels. List filters by saved ID without connecting. Removal unregisters only; repositories, workers, and reports remain.",
     parameters,
-    execute: async (_id, input, signal) => {
+    execute: async (input, signal) => {
       try {
         const params = parameters.parse(input);
         if (params.op === "list")

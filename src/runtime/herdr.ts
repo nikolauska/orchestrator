@@ -193,7 +193,9 @@ async function command(
 }
 
 // Native paths here are controller-local; remote overlay paths come only from ExecutionTarget.
-export const WORKER_CONFIG = fileURLToPath(new URL("../worker-config.yml", import.meta.url));
+export const WORKER_CONFIG = fileURLToPath(
+  new URL("../../.omp/worker-config.yml", import.meta.url),
+);
 export async function resolveLocalHerdrTarget(
   deps: RuntimeDeps,
   paths: { runtimeRoot: string; neutralRoot: string; hostId: string },

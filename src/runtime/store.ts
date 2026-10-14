@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 import {
   configurationContextSchema,
   digestSchema,

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { WorkerStore } from "../.omp/runtime/store";
-import { readProjects } from "../.omp/extensions/orchestrator/projects";
+import { WorkerStore } from "../src/runtime/store";
+import { readProjects } from "../src/tools/projects";
 import {
   cleanup,
   FakeExec,

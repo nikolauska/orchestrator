@@ -1,4 +1,4 @@
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { access, lstat, mkdir, open, readFile, rename, rm, rmdir, stat } from "node:fs/promises";
@@ -184,7 +184,8 @@ export async function createLocalHostRuntime(
       version: 1,
       hostId,
       overlayPath:
-        options.overlayPath ?? fileURLToPath(new URL("../worker-config.yml", import.meta.url)),
+        options.overlayPath ??
+        fileURLToPath(new URL("../../.omp/worker-config.yml", import.meta.url)),
       runtimeRoot,
       neutralRoot,
       queryCwd: options.cwd,

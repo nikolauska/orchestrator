@@ -1,4 +1,4 @@
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 import { createHash } from "node:crypto";
 import {
   configurationContextSchema,

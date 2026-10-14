@@ -95,7 +95,7 @@ export async function main(
       suppliedRuntime ??
       createHostRuntime(
         await loadHelperConfiguration(configPath),
-        { exec: nativeExec, sendMessage: () => {}, logger },
+        { exec: nativeExec, notify: () => {}, logger },
         { configurationPath: configPath, installationPath: process.execPath },
       );
     hostId = runtime.configuration.hostId;

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { executionTargetFixture } from "./test-helpers";
-import { targetKey, type ExecutionTarget } from "../.omp/runtime/execution";
-import { hostErrorSchema } from "../.omp/runtime/helper-protocol";
+import { targetKey, type ExecutionTarget } from "../src/runtime/execution";
+import { hostErrorSchema } from "../src/runtime/helper-protocol";
 import {
   closeWorkerSpace,
   createTab,
@@ -18,9 +18,9 @@ import {
   waitForAgent,
   waitForShell,
   type HerdrIntegrationEvidence,
-} from "../.omp/runtime/herdr";
-import { projectSpace, researchSpace, serializeSpaces } from "../.omp/runtime/spaces";
-import type { ExecResult, RuntimeDeps } from "../.omp/runtime/shared";
+} from "../src/runtime/herdr";
+import { projectSpace, researchSpace, serializeSpaces } from "../src/runtime/spaces";
+import type { ExecResult, RuntimeDeps } from "../src/runtime/shared";
 
 type Pane = {
   name: string;
@@ -94,7 +94,7 @@ class FakeHerdr {
   }
   deps: RuntimeDeps = {
     logger: {} as RuntimeDeps["logger"],
-    sendMessage: () => {},
+    notify: () => {},
     exec: (async (binary, input) => {
       if (binary !== "herdr") throw new Error("Unexpected executable");
       let server = this.inherited;

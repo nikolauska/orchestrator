@@ -6,10 +6,10 @@ import { mkdir, writeFile, rm, readFile, symlink, lstat, readdir } from "node:fs
 import { launchFixture } from "./task-fixtures";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { getReport, listReports } from "../.omp/extensions/orchestrator/reports";
-import { collectReport, provenancePath } from "../.omp/runtime/report-transfer";
-import { dispatchHostRequest, streamHostReport } from "../.omp/runtime/host";
-import type { StdioSpawn, WorkerRecord } from "../.omp/runtime/shared";
+import { getReport, listReports } from "../src/tools/reports";
+import { collectReport, provenancePath } from "../src/runtime/report-transfer";
+import { dispatchHostRequest, streamHostReport } from "../src/runtime/host";
+import type { StdioSpawn, WorkerRecord } from "../src/runtime/shared";
 import {
   stateFor,
   disposeWorkers,
@@ -19,10 +19,10 @@ import {
   verifyWorkerAgent,
   refreshWorkerHost,
   type WorkerState,
-} from "../.omp/extensions/orchestrator/workers";
-import { canonicalPath } from "../.omp/runtime/host-paths";
-import type { ExecResult } from "../.omp/runtime/shared";
-import { validateHostRequest } from "../.omp/runtime/helper-protocol";
+} from "../src/tools/workers";
+import { canonicalPath } from "../src/runtime/host-paths";
+import type { ExecResult } from "../src/runtime/shared";
+import { validateHostRequest } from "../src/runtime/helper-protocol";
 import { cleanup, eventually, fixtureRoot, register } from "./test-helpers";
 import { FakeExec, runtime, extensionRuntime, launchedPair } from "./herdr-fixtures";
 
@@ -382,10 +382,6 @@ describe("delivery", () => {
     expect(messages.every((item) => item.message.startsWith("Visible worker result:\n"))).toBe(
       true,
     );
-    expect(messages.map((item) => item.options)).toEqual([
-      { triggerTurn: true, deliverAs: "nextTurn" },
-      { triggerTurn: true, deliverAs: "nextTurn" },
-    ]);
     expect(fake.workspaces.map((item) => item.label)).toEqual(["fixture"]);
     expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
   });
@@ -797,7 +793,7 @@ async function supervisionFixture() {
   const waiters = new Map<string, () => void>();
   let profile: "normal" | "removed" | "retargeted" = "normal";
   const exec = fixture.api.exec;
-  fixture.api.sendMessage = (message) => {
+  fixture.api.notify = (message) => {
     messages.push({ message });
   };
   fixture.api.exec = async (command, input, options) => {
@@ -1574,11 +1570,11 @@ async function settlementFixture(machine = "remote", subprocess = false) {
     await writeFile(
       peerFile,
       `
-    import {createHostRuntime,dispatchHostRequest,nativeExec,streamHostReport} from ${JSON.stringify(fileURLToPath(new URL("../.omp/runtime/host.ts", import.meta.url)))};
+    import {createHostRuntime,dispatchHostRequest,nativeExec,streamHostReport} from ${JSON.stringify(fileURLToPath(new URL("../src/runtime/host.ts", import.meta.url)))};
     import {readFile,writeFile} from "node:fs/promises";
     const configuration = ${JSON.stringify(config)};
     const leasesPath = ${JSON.stringify(leaseFile)};
-    const runtime = createHostRuntime(configuration, {logger:{},sendMessage(){},exec:async(command,args,options)=>{
+    const runtime = createHostRuntime(configuration, {logger:{},notify(){},exec:async(command,args,options)=>{
       if (args[0] === "treehouse-fixture") {
         const leases = JSON.parse(await readFile(leasesPath,"utf8"));
         if (args[1] === "status") return {code:0,killed:false,stderr:"",stdout:JSON.stringify(leases)};

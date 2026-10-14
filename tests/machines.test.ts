@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { WorkerStore } from "../.omp/runtime/store";
-import type { MachineCheck } from "../.omp/runtime/machines";
+import { WorkerStore } from "../src/runtime/store";
+import type { MachineCheck } from "../src/runtime/machines";
 import {
   cleanup,
   executionTargetFixture,

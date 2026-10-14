@@ -1,5 +1,4 @@
 import { zod as z } from "@oh-my-pi/pi-coding-agent";
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -9,13 +8,13 @@ import {
   dispatchHostRequest,
   nativeExec,
   type HostRuntime,
-} from "../.omp/runtime/host";
-import { validateHostRequest } from "../.omp/runtime/helper-protocol";
-import { canonicalPath } from "../.omp/runtime/host-paths";
-import { WORKER_CONFIG } from "../.omp/runtime/herdr";
-import type { ExecResult, ToolAPI } from "../.omp/runtime/shared";
-import taskTool from "../.omp/extensions/orchestrator/orchestrator_task";
-import { disposeWorkers, stateFor } from "../.omp/extensions/orchestrator/workers";
+} from "../src/runtime/host";
+import { validateHostRequest } from "../src/runtime/helper-protocol";
+import { canonicalPath } from "../src/runtime/host-paths";
+import { WORKER_CONFIG } from "../src/runtime/herdr";
+import type { ExecResult, ToolAPI } from "../src/runtime/shared";
+import taskTool from "../src/tools/orchestrator_task";
+import { disposeWorkers, stateFor } from "../src/tools/workers";
 
 type Pane = {
   cwd: string;
@@ -184,7 +183,7 @@ export async function launchFixture() {
           omp: { executable: process.execPath, prefixArgs: ["omp-fixture"] },
         },
       },
-      { exec: hostExec, logger: {} as ToolAPI["logger"], sendMessage: () => {} },
+      { exec: hostExec, logger: {} as ToolAPI["logger"], notify: () => {} },
       {
         local: id === "local",
         discoverExecutable: (name) => (name === "herdr" ? process.execPath : Bun.which(name)),
@@ -402,15 +401,10 @@ export async function launchFixture() {
     spawnStdio,
     env: { HERDR_ENV: "1", HERDR_SOCKET_PATH: "fixture", HERDR_PANE_ID: "root:pane" },
     logger: {} as ToolAPI["logger"],
-    sendMessage: () => {},
+    notify: () => {},
   };
   const state = stateFor(api);
   const tool = taskTool(api);
-  // The factory only consumes params/signal; no agent-loop context exists in this fixture.
-  const execute = tool.execute as unknown as (
-    id: string,
-    params: unknown,
-  ) => Promise<CustomToolResult>;
   return {
     base,
     controller,
@@ -419,7 +413,7 @@ export async function launchFixture() {
     state,
     tool,
     git,
-    run: (params: unknown) => execute("fixture", params),
+    run: (params: unknown) => tool.execute(params),
     registerRemote: async () => {
       const host = hosts.get("remote")!;
       const path = await canonicalPath(host.project);

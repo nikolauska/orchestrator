@@ -5,21 +5,24 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 ## Structure
 
 ```text
-.omp/extensions/orchestrator/index.ts               Extension entry that registers every tool
-.omp/extensions/orchestrator/*.ts                   Tool factories
-.omp/runtime/shared.ts                             Shared types and helpers
-.omp/runtime/store.ts                              Durable worker registry and supervising-session ownership, backed by SQLite
-.omp/runtime/execution.ts                          Host-owned paths and immutable local/SSH targets
-.omp/runtime/helper-protocol.ts                    Strict versioned helper requests, results, receipts, report frames
-.omp/runtime/project-registry.ts                   Read-only v2 registry normalization and legacy import
-.omp/runtime/host.ts                               Host-local domain dispatcher, ownership ledger, delivery/report receipts
-.omp/runtime/host-paths.ts                         Native filesystem identity and containment (including Windows)
-.omp/runtime/ledger-queue.ts                       Per-host/controller ledger serialization
-.omp/runtime/{remote,remote-helper,helper-entry}.ts SSH transport, import-safe helper implementation and unconditional compiled entry
-.omp/runtime/machines.ts                           Herdr profile discovery, binding validation, preflight, and host OMP contexts
-.omp/runtime/report-transfer.ts                    Controller-local report collection, provenance, and durable receipts
-.omp/runtime/spaces.ts                             Herdr project and research space helpers
-.omp/runtime/{git,herdr,omp,treehouse,session}.ts    CLI and session-file wrappers
+.omp/extensions/orchestrator/index.ts               OMP extension discovery shim; re-exports src/adapters/omp.ts
+src/core/tool.ts                                   Harness-neutral tool contract and injected harness services
+src/adapters/omp.ts                                OMP adapter: tool registration, session events, nextTurn wake
+src/tools/index.ts                                 Builds every tool around one shared API object
+src/tools/*.ts                                     Tool factories returning harness-neutral specs
+src/runtime/shared.ts                             Shared types and helpers
+src/runtime/store.ts                              Durable worker registry and supervising-session ownership, backed by SQLite
+src/runtime/execution.ts                          Host-owned paths and immutable local/SSH targets
+src/runtime/helper-protocol.ts                    Strict versioned helper requests, results, receipts, report frames
+src/runtime/project-registry.ts                   Read-only v2 registry normalization and legacy import
+src/runtime/host.ts                               Host-local domain dispatcher, ownership ledger, delivery/report receipts
+src/runtime/host-paths.ts                         Native filesystem identity and containment (including Windows)
+src/runtime/ledger-queue.ts                       Per-host/controller ledger serialization
+src/runtime/{remote,remote-helper,helper-entry}.ts SSH transport, import-safe helper implementation and unconditional compiled entry
+src/runtime/machines.ts                           Herdr profile discovery, binding validation, preflight, and host OMP contexts
+src/runtime/report-transfer.ts                    Controller-local report collection, provenance, and durable receipts
+src/runtime/spaces.ts                             Herdr project and research space helpers
+src/runtime/{git,herdr,omp,treehouse,session}.ts    CLI and session-file wrappers
 .omp/worker-config.yml                             OMP settings overlay passed to every worker
 .omp/projects.json                                 Local project registry; ignored, never commit
 .omp/model-preferences.json                        Local model preferences; ignored, never commit
@@ -27,7 +30,6 @@ This repository provides the root OMP orchestrator's visible-worker tools. Keep 
 .omp/reports/                                      Controller-local report archive; ignored, never commit
 docs/domain/                                      Confirmed customer-visible behavior
 scripts/build-helper.ts                           Native helper build and stdio hello check
-scripts/helper-agent-shim.ts                       Standalone helper's zod import shim
 tests/test-helpers.ts                              Shared worker test fixtures
 tests/herdr-fixtures.ts                            Host and Herdr test fixtures
 tests/task-fixtures.ts                             Task launch test fixtures
@@ -49,6 +51,7 @@ tests/models.test.ts                               Models tool behavior tests
 ## Conventions
 
 - Use TypeScript ESM with `node:` imports.
+- Only `src/adapters/` may import a harness package such as `@oh-my-pi/pi-coding-agent`. Tools and runtime use `src/core/tool.ts` types; tool parameter schemas use the harness-injected `zod`, while runtime-internal validation imports `@oh-my-pi/omptype/zod` directly.
 - Use `async`/`await` for asynchronous work.
 - Keep the existing naming style: kebab-case files, PascalCase classes and types, camelCase functions and variables.
 - Match the existing tab indentation.

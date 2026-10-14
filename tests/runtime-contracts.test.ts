@@ -3,9 +3,9 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { WorkerStore, type ControllerOperation } from "../.omp/runtime/store";
-import { normalizeProjectRegistry, readProjectRegistry } from "../.omp/runtime/project-registry";
-import { validateExecutionTarget } from "../.omp/runtime/execution";
+import { WorkerStore, type ControllerOperation } from "../src/runtime/store";
+import { normalizeProjectRegistry, readProjectRegistry } from "../src/runtime/project-registry";
+import { validateExecutionTarget } from "../src/runtime/execution";
 import {
   PROTOCOL,
   ReportStreamValidator,
@@ -14,8 +14,8 @@ import {
   validateHostResult,
   validateReportFrame,
   type HostRequest,
-} from "../.omp/runtime/helper-protocol";
-import type { WorkerRecord } from "../.omp/runtime/shared";
+} from "../src/runtime/helper-protocol";
+import type { WorkerRecord } from "../src/runtime/shared";
 import { cleanup, executionTargetFixture, fixtureRoot } from "./test-helpers";
 
 afterEach(cleanup);

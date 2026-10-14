@@ -1,19 +1,18 @@
-import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { ToolSpec } from "../core/tool";
 import {
   selectOmpContext,
   selectedUsage,
   type OmpQueryAPI,
   type OmpSelector,
-} from "../../runtime/omp";
-import { errorMessage, text } from "../../runtime/shared";
+} from "../runtime/omp";
+import { errorMessage, text } from "../runtime/shared";
 
-const usageTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
+const usageTool = (pi: OmpQueryAPI): ToolSpec => {
   const z = pi.zod;
 
   return {
     name: "usage",
     label: "Usage",
-    loadMode: "essential",
     approval: "read",
     // Opt out of strict structured output: OpenAI-compatible strict mode marks every
     // property required, which would force the optional machine/project selectors.
@@ -30,7 +29,7 @@ const usageTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
         (params) => params.machine === undefined || params.project === undefined,
         "machine and project are mutually exclusive",
       ),
-    execute: async (_id: string, params: OmpSelector, signal?: AbortSignal) => {
+    execute: async (params: OmpSelector, signal?: AbortSignal) => {
       try {
         const selected = await selectOmpContext(pi, params, signal);
         const { context, ...summary } = await selectedUsage(pi, selected, Date.now(), signal);

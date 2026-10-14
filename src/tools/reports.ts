@@ -1,14 +1,14 @@
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { ToolOutcome } from "../core/tool";
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { errorMessage, projectNameSchema, text, type ToolFactory } from "../../runtime/shared";
-import { readProvenance } from "../../runtime/report-transfer";
+import { errorMessage, projectNameSchema, text, type ToolFactory } from "../runtime/shared";
+import { readProvenance } from "../runtime/report-transfer";
 
 export async function listReports(
   project: string | undefined,
   root: string,
   signal?: AbortSignal,
-): Promise<CustomToolResult> {
+): Promise<ToolOutcome> {
   const reportsRoot = join(root, ".omp", "reports");
   let namespaces;
   try {
@@ -60,7 +60,7 @@ export async function getReport(
   name: string,
   root: string,
   signal?: AbortSignal,
-): Promise<CustomToolResult> {
+): Promise<ToolOutcome> {
   const segments = name.split("/");
   if (
     segments.length > 2 ||
@@ -107,7 +107,6 @@ const reportsTool: ToolFactory = (pi) => {
   return {
     name: "reports",
     label: "Reports",
-    loadMode: "essential",
     approval: "read",
     description:
       "Find durable scout reports across registered projects and independent research, then read a selected report by its listed name, optionally prefixed with its `namespace/`.",
@@ -120,7 +119,7 @@ const reportsTool: ToolFactory = (pi) => {
         .strict(),
       z.object({ op: z.literal("get"), name: z.string() }).strict(),
     ]),
-    execute: async (_id, params, signal?: AbortSignal) => {
+    execute: async (params, signal?: AbortSignal) => {
       try {
         if (params.op === "list") return await listReports(params.project, pi.cwd, signal);
 

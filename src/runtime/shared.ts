@@ -1,4 +1,4 @@
-import type { ExtensionAPI, CustomToolResult, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { HarnessServices, ToolOutcome, ToolSpec, Zod } from "../core/tool";
 import type { ConfigurationContext, ExecutionTarget, StoredTarget } from "./execution";
 import type { HostRuntime } from "./host";
 import type { OmpContextResolver } from "./omp";
@@ -55,23 +55,18 @@ export type TerminalOutcome =
   | { kind: "merged" | "pushed" | "no_changes"; receipt: DeliveryReceipt }
   | { kind: "closed" | "discarded"; authorizedAt: string; releaseReceipt?: ReleaseReceipt };
 
-export type ExecResult = { stdout: string; stderr: string; code: number; killed?: boolean };
-export type RuntimeDeps = {
-  exec: ExtensionAPI["exec"];
-  sendMessage(message: string, options: { triggerTurn: true; deliverAs: "nextTurn" }): void;
-  logger: ExtensionAPI["logger"];
-  spawnStdio?: StdioSpawn;
-};
+export type { ExecResult } from "../core/tool";
+export type RuntimeDeps = HarnessServices & { spawnStdio?: StdioSpawn };
 export type ToolAPI = RuntimeDeps & {
   cwd: string;
-  zod: ExtensionAPI["zod"];
+  zod: Zod;
   env?: Record<string, string | undefined>;
   neutralRoot?: string;
   target?: ExecutionTarget;
   localHostRuntime?: HostRuntime;
   resolveOmpContext?: OmpContextResolver;
 };
-export type ToolFactory = (api: ToolAPI) => ToolDefinition<any, any>;
+export type ToolFactory = (api: ToolAPI) => ToolSpec;
 
 export type ProjectParams =
   | { op: "list"; machine?: string }
@@ -187,7 +182,7 @@ export type WorkerRecord = {
 export const NAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 export const LEASE_ID = /^[0-9a-fA-F]{32}$/;
 
-export const projectNameSchema = (z: ExtensionAPI["zod"]) =>
+export const projectNameSchema = (z: Zod) =>
   z.union([
     z.literal("_independent"),
     z
@@ -195,7 +190,7 @@ export const projectNameSchema = (z: ExtensionAPI["zod"]) =>
       .regex(NAME, "Project name must be 1-64 characters of letters, digits, '.', '_', or '-'"),
   ]);
 
-export function text(text: string, details?: unknown, isError = false): CustomToolResult {
+export function text(text: string, details?: unknown, isError = false): ToolOutcome {
   return { content: [{ type: "text", text }], details, ...(isError ? { isError: true } : {}) };
 }
 

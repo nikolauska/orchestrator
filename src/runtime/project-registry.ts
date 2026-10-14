@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 import { idSchema, nativeStringSchema } from "./execution";
 
 const str = nativeStringSchema;

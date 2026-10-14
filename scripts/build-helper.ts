@@ -3,10 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { validateHostReply } from "../.omp/runtime/helper-protocol";
+import { validateHostReply } from "../src/runtime/helper-protocol";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
-const shim = fileURLToPath(new URL("./helper-agent-shim.ts", import.meta.url));
 export const nativeTarget = `bun-${process.platform === "win32" ? "windows" : process.platform}-${process.arch}`;
 
 export async function verifyHelper(executable: string): Promise<void> {
@@ -83,18 +82,9 @@ export async function buildHelper(target = nativeTarget, outfile?: string): Prom
       ),
   );
   await mkdir(dirname(output), { recursive: true });
-  // The extension shares OMP's zod; the standalone binary must not bundle the agent package.
   const result = await Bun.build({
-    entrypoints: [join(root, ".omp/runtime/helper-entry.ts")],
+    entrypoints: [join(root, "src/runtime/helper-entry.ts")],
     compile: { outfile: output, target: target as Bun.Build.CompileTarget },
-    plugins: [
-      {
-        name: "helper-agent-shim",
-        setup(build) {
-          build.onResolve({ filter: /^@oh-my-pi\/pi-coding-agent$/ }, () => ({ path: shim }));
-        },
-      },
-    ],
   });
   if (!result.success) throw new AggregateError(result.logs, "Helper compilation failed");
   if (

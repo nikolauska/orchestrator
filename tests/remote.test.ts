@@ -4,8 +4,8 @@ import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promise
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { nativeExec } from "../.omp/runtime/host";
-import { HostFailure } from "../.omp/runtime/host-paths";
+import { nativeExec } from "../src/runtime/host";
+import { HostFailure } from "../src/runtime/host-paths";
 import {
   PROTOCOL,
   validateHostRequest,
@@ -13,9 +13,9 @@ import {
   type HostArgs,
   type HostOp,
   type HostRequest,
-} from "../.omp/runtime/helper-protocol";
-import { callHelper, readReportStream, readJsonLines } from "../.omp/runtime/remote";
-import type { StdioSpawn } from "../.omp/runtime/shared";
+} from "../src/runtime/helper-protocol";
+import { callHelper, readReportStream, readJsonLines } from "../src/runtime/remote";
+import type { StdioSpawn } from "../src/runtime/shared";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -80,7 +80,7 @@ async function subprocessFixture() {
     hostId: configuration.hostId,
     sshTarget: "stdio-test-host",
   };
-  const helperPath = fileURLToPath(new URL("../.omp/runtime/helper-entry.ts", import.meta.url));
+  const helperPath = fileURLToPath(new URL("../src/runtime/helper-entry.ts", import.meta.url));
   const spawnStdio: StdioSpawn = () => {
     const child = Bun.spawn([process.execPath, "run", helperPath, "--stdio-v1"], {
       env: { ...process.env, OMP_ORCHESTRATOR_HELPER_CONFIG: configurationPath },

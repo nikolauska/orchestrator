@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 import {
   machineBindingSchema,
   targetKey,

@@ -2,15 +2,15 @@ import { afterEach, describe, expect, test, vi } from "bun:test";
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { CustomToolResult } from "@oh-my-pi/pi-coding-agent";
+import type { ToolOutcome } from "../src/core/tool";
 import { cleanup, eventually, FakeExec, fixtureRoot, register, roots } from "./test-helpers";
 import { runtime, launchedIndependent, launchedScout } from "./herdr-fixtures";
 import { launchFixture } from "./task-fixtures";
-import { runTask } from "../.omp/extensions/orchestrator/orchestrator_task";
-import { disposeWorkers, stateFor } from "../.omp/extensions/orchestrator/workers";
-import { WorkerStore } from "../.omp/runtime/store";
-import { provenancePath } from "../.omp/runtime/report-transfer";
-import { canonicalPath } from "../.omp/runtime/host-paths";
+import { runTask } from "../src/tools/orchestrator_task";
+import { disposeWorkers, stateFor } from "../src/tools/workers";
+import { WorkerStore } from "../src/runtime/store";
+import { provenancePath } from "../src/runtime/report-transfer";
+import { canonicalPath } from "../src/runtime/host-paths";
 
 afterEach(cleanup);
 describe("scout reports", () => {
@@ -660,8 +660,8 @@ describe("startup ownership boundaries", () => {
     const f = await launchFixture();
     const entered = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
     const gates = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
-    let first: Promise<CustomToolResult> | undefined;
-    let second: Promise<CustomToolResult> | undefined;
+    let first: Promise<ToolOutcome> | undefined;
+    let second: Promise<ToolOutcome> | undefined;
     try {
       await f.registerRemote();
       const remote = f.hosts.get("remote")!;

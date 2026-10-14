@@ -1,21 +1,22 @@
 import { expect } from "bun:test";
 import { zod } from "@oh-my-pi/pi-coding-agent";
-import type { CustomToolResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
+import type { ExtensionAPI, ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { SessionReason, ToolOutcome, ToolSpec } from "../src/core/tool";
 import { mkdtemp, mkdir, rm, writeFile, readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
-import { HostFailure, nativeAbsolutePath } from "../.omp/runtime/host-paths";
-import { PROTOCOL, validateHostRequest, type HelloResult } from "../.omp/runtime/helper-protocol";
+import { HostFailure, nativeAbsolutePath } from "../src/runtime/host-paths";
+import { PROTOCOL, validateHostRequest, type HelloResult } from "../src/runtime/helper-protocol";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { registerOrchestrator } from "../.omp/extensions/orchestrator";
-import machinesTool from "../.omp/extensions/orchestrator/machines";
-import { createHostRuntime, type HostRuntime } from "../.omp/runtime/host";
-import { WORKER_CONFIG } from "../.omp/runtime/herdr";
-import { resolveMachineOmpContext } from "../.omp/runtime/machines";
-import { stateFor, disposeWorkers } from "../.omp/extensions/orchestrator/workers";
-import projectsTool from "../.omp/extensions/orchestrator/projects";
-import taskTool from "../.omp/extensions/orchestrator/orchestrator_task";
+import machinesTool from "../src/tools/machines";
+import { createHostRuntime, type HostRuntime } from "../src/runtime/host";
+import { WORKER_CONFIG } from "../src/runtime/herdr";
+import { resolveMachineOmpContext } from "../src/runtime/machines";
+import { stateFor, disposeWorkers } from "../src/tools/workers";
+import projectsTool from "../src/tools/projects";
+import taskTool from "../src/tools/orchestrator_task";
 import type {
   MachinesParams,
   ProjectParams,
@@ -23,12 +24,12 @@ import type {
   ToolAPI,
   WorkersParams,
   ExecResult,
-} from "../.omp/runtime/shared";
-import workersTool from "../.omp/extensions/orchestrator/workers";
-import modelsTool from "../.omp/extensions/orchestrator/models";
-import usageTool from "../.omp/extensions/orchestrator/usage";
-import type { HostModelsParams } from "../.omp/extensions/orchestrator/models";
-import { targetKey, type ExecutionTarget } from "../.omp/runtime/execution";
+} from "../src/runtime/shared";
+import workersTool from "../src/tools/workers";
+import modelsTool from "../src/tools/models";
+import usageTool from "../src/tools/usage";
+import type { HostModelsParams } from "../src/tools/models";
+import { targetKey, type ExecutionTarget } from "../src/runtime/execution";
 
 export function executionTargetFixture(
   os: ExecutionTarget["os"] = "linux",
@@ -79,30 +80,20 @@ export type FakeWorkspace = {
   worktree?: { repo_root: string; is_linked_worktree: boolean; checkout_path?: string };
 };
 
-type ToolLike = {
-  name: string;
-  execute(
-    toolCallId: string,
-    params: unknown,
-    signal: AbortSignal | undefined,
-    onUpdate: unknown,
-    context: unknown,
-  ): Promise<CustomToolResult>;
-  onSession?: (event: unknown, context: unknown) => void | Promise<void>;
-};
+type ToolLike = Pick<ToolSpec, "name" | "execute" | "onSession">;
 
 type Message = { message: string; options: unknown };
 
 export interface ToolHarness {
-  runProjects(params: ProjectParams, signal?: AbortSignal): Promise<CustomToolResult>;
-  runTask(params: TaskParams, signal?: AbortSignal): Promise<CustomToolResult>;
-  runWorkers(params: WorkersParams, signal?: AbortSignal): Promise<CustomToolResult>;
-  runModels(params: HostModelsParams, signal?: AbortSignal): Promise<CustomToolResult>;
-  runMachines(params: MachinesParams, signal?: AbortSignal): Promise<CustomToolResult>;
+  runProjects(params: ProjectParams, signal?: AbortSignal): Promise<ToolOutcome>;
+  runTask(params: TaskParams, signal?: AbortSignal): Promise<ToolOutcome>;
+  runWorkers(params: WorkersParams, signal?: AbortSignal): Promise<ToolOutcome>;
+  runModels(params: HostModelsParams, signal?: AbortSignal): Promise<ToolOutcome>;
+  runMachines(params: MachinesParams, signal?: AbortSignal): Promise<ToolOutcome>;
   runUsage(
     params: { machine?: string; project?: string },
     signal?: AbortSignal,
-  ): Promise<CustomToolResult>;
+  ): Promise<ToolOutcome>;
   dispose(): void;
 }
 
@@ -455,7 +446,7 @@ export class FakeExec {
 
 export function fixtureHost(
   root: string,
-  deps: Pick<ToolAPI, "exec" | "logger" | "sendMessage">,
+  deps: Pick<ToolAPI, "exec" | "logger" | "notify">,
 ): HostRuntime {
   const runtimeRoot = `${root}-host-runtime`;
   const neutralRoot = `${root}-host-neutral`;
@@ -519,8 +510,8 @@ export function runtime(
     exec: fake.exec as unknown as ToolAPI["exec"],
     logger: {} as ToolAPI["logger"],
     zod,
-    sendMessage: (message, options) => {
-      messages.push({ message, options });
+    notify: (message) => {
+      messages.push({ message, options: undefined });
     },
     env,
     neutralRoot,
@@ -547,7 +538,7 @@ export function runtime(
     workersTool(api),
     modelsTool(api),
     usageTool(api),
-  ] as unknown as ToolLike[]);
+  ]);
 }
 
 // Loads the real extension entry the way OMP does: cwd and Herdr environment come from the process.
@@ -577,7 +568,15 @@ export function extensionRuntime(
     exec: fake.exec,
     logger: {},
     zod,
-    registerTool: (tool: ToolLike) => tools.push(tool),
+    // Drive registered tools through OMP's own call shape so the adapter mapping is exercised.
+    registerTool: (tool: ToolDefinition<any, any>) =>
+      tools.push({
+        name: tool.name,
+        execute: (params, signal) =>
+          tool.execute("test", params, signal, undefined, {} as never) as Promise<ToolOutcome>,
+        onSession: (reason: SessionReason) =>
+          void tool.onSession?.({ reason, previousSessionFile: undefined }, {} as never),
+      }),
     sendMessage: (message: string, options: unknown) => messages.push({ message, options }),
   } as unknown as ExtensionAPI;
   process.chdir(root);
@@ -587,7 +586,7 @@ export function extensionRuntime(
       localHostRuntime: fixtureHost(root, {
         exec: fake.exec as ToolAPI["exec"],
         logger: {},
-        sendMessage: () => {},
+        notify: () => {},
       }),
     });
     restores.push(() => {
@@ -608,7 +607,7 @@ function harness(tools: ToolLike[]): ToolHarness {
     return found;
   };
   const execute = (name: string, params: unknown, signal?: AbortSignal) =>
-    tool(name).execute("test", params, signal, undefined, undefined);
+    tool(name).execute(params, signal);
 
   return {
     runProjects: (params, signal) => execute("projects", params, signal),
@@ -618,7 +617,7 @@ function harness(tools: ToolLike[]): ToolHarness {
     runMachines: (params, signal) => execute("machines", params, signal),
     runUsage: (params, signal) => execute("usage", params, signal),
     dispose: () => {
-      void tool("workers").onSession?.({ reason: "shutdown" }, undefined);
+      tool("workers").onSession?.("shutdown");
     },
   };
 }

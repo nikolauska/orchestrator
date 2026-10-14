@@ -6,10 +6,10 @@ import {
   statusMachine,
   validateBinding,
   type Machine,
-} from "../../runtime/machines";
-import { readProjectRegistry } from "../../runtime/project-registry";
-import { errorMessage, text, type ToolFactory } from "../../runtime/shared";
-import type { MachineBinding } from "../../runtime/execution";
+} from "../runtime/machines";
+import { readProjectRegistry } from "../runtime/project-registry";
+import { errorMessage, text, type ToolFactory } from "../runtime/shared";
+import type { MachineBinding } from "../runtime/execution";
 import { requireOwnership, stateFor } from "./workers";
 
 const machinesTool: ToolFactory = (pi) => {
@@ -23,12 +23,11 @@ const machinesTool: ToolFactory = (pi) => {
   return {
     name: "machines",
     label: "Machines",
-    loadMode: "essential",
     approval: "write",
     description:
       "Discover saved Herdr machines, check reachability and manually provisioned prerequisites, or set the default for future independent scouts. Never enrolls, installs, reconnects, or moves retained workers.",
     parameters,
-    execute: async (_id, input, signal) => {
+    execute: async (input, signal) => {
       try {
         const params = parameters.parse(input);
         const state = stateFor(pi);

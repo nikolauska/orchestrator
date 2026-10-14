@@ -1,5 +1,5 @@
 // Must be OMP's own zod: schemas here are composed with store/registry schemas inside the loaded extension, and a second zod copy breaks OMP's extension loader.
-import { zod as z } from "@oh-my-pi/pi-coding-agent";
+import * as z from "@oh-my-pi/omptype/zod";
 
 // Error-only identity before helper configuration is available; never a machine binding.
 export const UNCONFIGURED_HOST_ID = "00000000-0000-4000-8000-000000000000";

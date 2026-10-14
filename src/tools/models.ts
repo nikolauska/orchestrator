@@ -1,4 +1,4 @@
-import type { ToolDefinition } from "@oh-my-pi/pi-coding-agent";
+import type { ToolSpec } from "../core/tool";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
@@ -9,8 +9,8 @@ import {
   type CatalogModel,
   type OmpQueryAPI,
   type OmpSelector,
-} from "../../runtime/omp";
-import { errorMessage, text, type ModelsParams, type ToolAPI } from "../../runtime/shared";
+} from "../runtime/omp";
+import { errorMessage, text, type ModelsParams, type ToolAPI } from "../runtime/shared";
 
 export type ModelPreference =
   | { stance: "prefer"; for?: string[]; rank?: number; note?: string; updated_at: string }
@@ -213,7 +213,7 @@ export async function listModels(
   return text(`Models:\n${JSON.stringify(details, null, 2)}`, details);
 }
 
-const modelsTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
+const modelsTool = (pi: OmpQueryAPI): ToolSpec => {
   const z = pi.zod;
   const selector = { machine: z.string().min(1).optional(), project: z.string().min(1).optional() };
   const exclusive = (params: OmpSelector) =>
@@ -221,7 +221,6 @@ const modelsTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
   return {
     name: "models",
     label: "Models",
-    loadMode: "essential",
     approval: "write",
     description:
       "List OMP chat models with the user's saved model preferences and the models current OMP roles run, and remember preferences. `list` view `preferred` (default) shows only models with a saved preference or role; `all` searches the full catalog. Each row's `model` is the exact value for orchestrator_task `model`. `prefer` saves a preferred model, optionally with the roles or kinds of work it is for, a rank (1 = first choice), and the user's reason; `avoid` marks a model never to pick on your own; `forget` deletes a saved entry. Saving replaces any earlier entry for the same model value. Optional machine or project selects the catalog and configuration context; neither means local. Preferences stay controller-local; forget needs no host.",
@@ -262,7 +261,7 @@ const modelsTool = (pi: OmpQueryAPI): ToolDefinition<any, any> => {
         .refine(exclusive, "machine and project are mutually exclusive"),
       z.object({ op: z.literal("forget"), model: z.string().min(1) }).strict(),
     ]),
-    execute: async (_id: string, params: HostModelsParams, signal?: AbortSignal) => {
+    execute: async (params: HostModelsParams, signal?: AbortSignal) => {
       const root = pi.cwd;
       try {
         signal?.throwIfAborted();

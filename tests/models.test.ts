@@ -4,19 +4,19 @@ import { join } from "node:path";
 import { cleanup, FakeExec, fixtureRoot, fixtureHost, runtime } from "./test-helpers";
 import { zod } from "@oh-my-pi/pi-coding-agent";
 import { createHash } from "node:crypto";
-import modelsTool from "../.omp/extensions/orchestrator/models";
+import modelsTool from "../src/tools/models";
 import {
   effectiveWorkerChoice,
   selectOmpContext,
   selectedModels,
   type OmpContextResolver,
   type OmpQueryAPI,
-} from "../.omp/runtime/omp";
-import { createHostRuntime, dispatchHostRequest } from "../.omp/runtime/host";
-import type { HostReply, HostRequest } from "../.omp/runtime/helper-protocol";
-import type { StdioSpawn, RuntimeDeps } from "../.omp/runtime/shared";
+} from "../src/runtime/omp";
+import { createHostRuntime, dispatchHostRequest } from "../src/runtime/host";
+import type { HostReply, HostRequest } from "../src/runtime/helper-protocol";
+import type { StdioSpawn, RuntimeDeps } from "../src/runtime/shared";
 import { executionTargetFixture } from "./test-helpers";
-import { resolveMachineOmpContext } from "../.omp/runtime/machines";
+import { resolveMachineOmpContext } from "../src/runtime/machines";
 
 afterEach(cleanup);
 
@@ -279,7 +279,7 @@ async function hostModelsFixture() {
         return { code: 0, stdout: JSON.stringify(value), stderr: "" };
       },
       logger: {} as RuntimeDeps["logger"],
-      sendMessage() {},
+      notify() {},
     },
     { discoverExecutable: () => process.execPath },
   );
@@ -323,7 +323,7 @@ async function hostModelsFixture() {
     cwd: root,
     zod,
     logger: {} as RuntimeDeps["logger"],
-    sendMessage() {},
+    notify() {},
     exec: (command, args, options) =>
       local.exec(
         command,
@@ -335,7 +335,7 @@ async function hostModelsFixture() {
   };
   pi.localHostRuntime = fixtureHost(root, pi);
   const tool = modelsTool(pi);
-  const run = (params: unknown) => tool.execute("test", params, undefined, undefined, {} as never);
+  const run = (params: unknown) => tool.execute(params);
   return {
     root,
     pi,
@@ -520,7 +520,7 @@ test("effective local choice preserves colon ids, refuses role cycles, and verif
     cwd: root,
     zod,
     logger: {} as RuntimeDeps["logger"],
-    sendMessage() {},
+    notify() {},
     exec: fake.exec as RuntimeDeps["exec"],
   };
   pi.localHostRuntime = fixtureHost(root, pi);

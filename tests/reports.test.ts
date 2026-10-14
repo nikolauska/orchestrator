@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { getReport, listReports } from "../.omp/extensions/orchestrator/reports";
+import { getReport, listReports } from "../src/tools/reports";
 import { cleanup, fixtureRoot } from "./test-helpers";
-import { provenancePath } from "../.omp/runtime/report-transfer";
+import { provenancePath } from "../src/runtime/report-transfer";
 
 afterEach(cleanup);
 

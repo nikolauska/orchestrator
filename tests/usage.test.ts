@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { usageSummary } from "../.omp/runtime/omp";
-import type { RuntimeDeps } from "../.omp/runtime/shared";
+import { usageSummary } from "../src/runtime/omp";
+import type { RuntimeDeps } from "../src/runtime/shared";
 import { cleanup, FakeExec, fixtureRoot, extensionRuntime } from "./test-helpers";
 import { zod } from "@oh-my-pi/pi-coding-agent";
-import usageTool from "../.omp/extensions/orchestrator/usage";
-import type { OmpQueryAPI, OmpContextResolver } from "../.omp/runtime/omp";
-import { PROTOCOL, type HostRequest, type HostReply } from "../.omp/runtime/helper-protocol";
-import type { StdioSpawn } from "../.omp/runtime/shared";
+import usageTool from "../src/tools/usage";
+import type { OmpQueryAPI, OmpContextResolver } from "../src/runtime/omp";
+import { PROTOCOL, type HostRequest, type HostReply } from "../src/runtime/helper-protocol";
+import type { StdioSpawn } from "../src/runtime/shared";
 import { executionTargetFixture } from "./test-helpers";
 import { writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -224,7 +224,7 @@ test("usage selects one host's own accounts, role/profile context, and unmodifie
     cwd: root,
     zod,
     logger: {} as RuntimeDeps["logger"],
-    sendMessage() {},
+    notify() {},
     exec: (command, args, options) =>
       local.exec(
         command,
@@ -235,7 +235,7 @@ test("usage selects one host's own accounts, role/profile context, and unmodifie
     resolveOmpContext: resolver,
   };
   const tool = usageTool(pi);
-  const run = (params: unknown) => tool.execute("usage", params, undefined, undefined, {} as never);
+  const run = (params: unknown) => tool.execute(params);
   const win = await run({ machine: "windows" });
   expect(win).not.toHaveProperty("isError", true);
   expect(win.details).toMatchObject({
