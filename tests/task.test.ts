@@ -397,6 +397,20 @@ describe("target-bound launch journal", () => {
     tasks: [{ kind: "scout" as const, name, task: "Inspect the source", startFrom: "research" }],
   });
 
+  test("refuses Claude Code workers on a remote machine before allocating", async () => {
+    const f = await fixture();
+    await f.registerRemote();
+    const result = await f.run({
+      project: "repo",
+      context: "Research only",
+      tasks: [{ kind: "scout", name: "remote-claude", task: "Inspect", agent: "claude" }],
+    });
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("only on the local machine");
+    expect(f.hosts.get("remote")!.state.allocated).toBe(0);
+    expect(f.state.store.all()).toEqual([]);
+  });
+
   test("rejects project machine overrides before resources and honors independent default/override", async () => {
     const f = await fixture();
     await f.registerRemote();

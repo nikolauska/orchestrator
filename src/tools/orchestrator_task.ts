@@ -17,12 +17,7 @@ import type { ConfigurationContext, ExecutionTarget, HostPath } from "../runtime
 import { agentName } from "../runtime/execution";
 import { canonicalPath } from "../runtime/host-paths";
 import type { HostArgs, HostResult } from "../runtime/helper-protocol";
-import {
-  effectiveWorkerChoice,
-  selectedModels,
-  type ModelChoice,
-  type SelectedOmpContext,
-} from "../runtime/omp";
+import { effectiveWorkerChoice, selectedModels, type SelectedOmpContext } from "../runtime/omp";
 import {
   callMachine,
   checkMachine,
@@ -37,7 +32,9 @@ import {
   createTab,
   getAgent,
   promptAgent,
-  startOmpAgent,
+  startAgent,
+  CLAUDE_EFFORTS,
+  type AgentChoice,
   waitForShell,
 } from "../runtime/herdr";
 import { projectSpace, researchSpace, serializeSpaces, workerLabel } from "../runtime/spaces";
@@ -60,7 +57,7 @@ export type LaunchPreflight = {
   resolved: ResolvedMachine;
   selected: SelectedOmpContext;
   forbiddenRoots: HostPath[];
-  choices: Record<string, ModelChoice>;
+  choices: Record<string, AgentChoice>;
 } & (
   | { scope: "independent" }
   | {
@@ -91,8 +88,9 @@ export async function runTask(
       // OMP's strict tool schema transport materializes omitted optional fields as "" or false; keep omission as default behavior.
       params = {
         ...params,
-        tasks: params.tasks.map(({ pushTo, role, model, startFrom, hold, ...item }) => ({
+        tasks: params.tasks.map(({ agent, pushTo, role, model, startFrom, hold, ...item }) => ({
           ...item,
+          ...(agent === "claude" ? { agent } : {}),
           ...(pushTo ? { pushTo } : {}),
           ...(role ? { role } : {}),
           ...(model ? { model } : {}),
@@ -124,6 +122,17 @@ export async function runTask(
   }
 }
 
+const CLAUDE_MODEL = new RegExp(
+  `^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]*(?::(?:${CLAUDE_EFFORTS.join("|")}))?$`,
+);
+
+/** Claude Code resolves aliases itself; omitting the model keeps the host's default. */
+function claudeChoice(model: string | undefined): AgentChoice {
+  if (!model) return {};
+  const split = model.lastIndexOf(":");
+  return split > 0 ? { model: model.slice(0, split), thinking: model.slice(split + 1) } : { model };
+}
+
 function validateTask(params: TaskParams): void {
   if (!params || typeof params !== "object") throw new Error("Malformed task scope");
   const hasProject = Object.prototype.hasOwnProperty.call(params, "project");
@@ -153,6 +162,14 @@ function validateTask(params: TaskParams): void {
       throw new Error(`Invalid task kind for ${item.name}: ${item.kind}`);
     if (typeof item.task !== "string" || !item.task.trim())
       throw new Error(`Task for ${item.name} must be non-empty`);
+    if (item.agent !== undefined && item.agent !== "omp" && item.agent !== "claude")
+      throw new Error(`Invalid agent for ${item.name}: ${item.agent}`);
+    if (item.agent === "claude" && item.role)
+      throw new Error(`Claude Code worker ${item.name} takes a model, not an OMP role`);
+    if (item.agent === "claude" && item.model && !CLAUDE_MODEL.test(item.model))
+      throw new Error(
+        `Invalid Claude Code model for ${item.name}: ${item.model}; use an alias or full name with optional :${CLAUDE_EFFORTS.join("|")}`,
+      );
     if (item.role !== undefined && (typeof item.role !== "string" || !NAME.test(item.role)))
       throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
     if (item.model !== undefined && (typeof item.model !== "string" || !/^\S+$/.test(item.model)))
@@ -211,9 +228,14 @@ export async function preflightTask(
       ? saved
       : undefined;
   const options = { controllerId: state.store.controllerId, binding, signal };
+  const agents = [...new Set(params.tasks.map((item) => item.agent ?? "omp"))];
+  // OMP-only batches keep the original preflight arguments that older helpers accept.
+  const agentArgs = agents.includes("claude") ? { agents } : {};
   const checked = await checkMachine(state.api, selector, {
     ...options,
-    preflight: entry ? { scope: "project", projectPath: entry.path } : { scope: "independent" },
+    preflight: entry
+      ? { scope: "project", projectPath: entry.path, ...agentArgs }
+      : { scope: "independent", ...agentArgs },
   });
   if (!checked.ready || !checked.target || !checked.preflight)
     throw new Error(
@@ -238,10 +260,16 @@ export async function preflightTask(
       runtime: resolved.runtime,
     },
   };
-  const models = await selectedModels(state.api, selected, signal);
-  const choices: Record<string, ModelChoice> = {};
+  const models = agents.includes("omp")
+    ? await selectedModels(state.api, selected, signal)
+    : undefined;
+  const choices: Record<string, AgentChoice> = {};
   for (const item of params.tasks)
-    choices[item.name] = await effectiveWorkerChoice(models, context, item, signal);
+    choices[item.name] = models
+      ? item.agent === "claude"
+        ? claudeChoice(item.model)
+        : await effectiveWorkerChoice(models, context, item, signal)
+      : claudeChoice(item.model);
   const forbiddenRoots: HostPath[] = [];
   for (const [name, registered] of Object.entries(registry.projects)) {
     if (
@@ -313,7 +341,7 @@ async function requireHerdr(state: WorkerState, target: ExecutionTarget): Promis
     (state.env.HERDR_ENV !== "1" || !state.env.HERDR_SOCKET_PATH || !state.env.HERDR_PANE_ID)
   )
     throw new Error(
-      "Herdr's OMP integration is required; run `herdr integration install omp` and restart OMP",
+      "The root session must run inside a Herdr pane with Herdr's integration for its agent installed",
     );
 }
 
@@ -339,7 +367,7 @@ function workerPrompt(
       : " The registered checkout has no local changes to exclude.";
     return `${lead}You are a scout researching the exact committed revision ${revision} of this project. The registered checkout's local changes are excluded.${excluded}\nThis worktree is disposable: scratch edits, experiments, and commits are fine and are never delivered.\n\n${finish}\n\n${item.task}`;
   }
-  return `${lead}You are a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded; global and user OMP instructions still apply. Scratch files in ${directory} are disposable and never delivered; do not create commits or implement changes for delivery. Public web search and public URL reads are enabled. Use authenticated external systems only when this assignment explicitly asks for them.\n\n${finish} Include source URLs and the research date in the report.\n\n${item.task}`;
+  return `${lead}You are a project-independent scout. No registered-project checkout or project revision applies, and project-specific context is intentionally excluded; global and user agent instructions still apply. Scratch files in ${directory} are disposable and never delivered; do not create commits or implement changes for delivery. Public web search and public URL reads are enabled. Use authenticated external systems only when this assignment explicitly asks for them.\n\n${finish} Include source URLs and the research date in the report.\n\n${item.task}`;
 }
 
 export function prepareLaunchOperation(
@@ -484,15 +512,19 @@ async function launchWorker(
       ...preflight.selected.configuration_context,
       cwd: directory,
     };
-    const models = await selectedModels(
-      state.api,
-      { ...preflight.selected, configuration_context: configuration },
-      signal,
-    );
-    const choice = await effectiveWorkerChoice(models, configuration, item, signal);
+    const kind = record.agent_kind ?? "omp";
+    let choice: AgentChoice = preflight.choices[item.name]!;
+    if (kind === "omp") {
+      const models = await selectedModels(
+        state.api,
+        { ...preflight.selected, configuration_context: configuration },
+        signal,
+      );
+      choice = await effectiveWorkerChoice(models, configuration, item, signal);
+      record.configuration_context = models.context;
+    }
     record.model = choice.model;
     record.thinking = choice.thinking;
-    record.configuration_context = models.context;
     record.prompt = workerPrompt(preflight, context, item, directory, record.report_source_path);
     persist(state, record);
     if (record.report_path) await mkdir(dirname(record.report_path), { recursive: true });
@@ -559,12 +591,19 @@ async function launchWorker(
         choice,
       }),
       () =>
-        startOmpAgent(state.deps, target, record.agent_name!, record.pane_id!, directory, choice, {
-          signal,
-        }),
+        startAgent(
+          state.deps,
+          target,
+          kind,
+          record.agent_name!,
+          record.pane_id!,
+          directory,
+          choice,
+          { signal },
+        ),
     );
     const agent = await getAgent(state.deps, target, record.pane_id, { signal });
-    // OMP exposes a future session filename before creating it. Bind terminal ownership now;
+    // Agents expose a future session filename before creating it. Bind terminal ownership now;
     // S7 must confirm a materialized session reference in a later revision before helper reads.
     record.agent_binding = agentBinding(
       target,
@@ -577,6 +616,7 @@ async function launchWorker(
         workspaceId: record.workspace_id!,
       },
       1,
+      kind,
     );
     persist(state, record);
     await hostMutation("worker.bind-agent", { launchId, binding: record.agent_binding });
@@ -589,7 +629,7 @@ async function launchWorker(
         binding: record.agent_binding,
         prompt: record.prompt,
       }),
-      () => promptAgent(state.deps, target, record.pane_id, record.prompt!, { signal }),
+      () => promptAgent(state.deps, target, record.pane_id, record.prompt!, { signal, kind }),
     );
     const observed = await getAgent(state.deps, target, record.pane_id, { signal });
     agentBinding(
@@ -603,6 +643,7 @@ async function launchWorker(
         workspaceId: record.workspace_id!,
       },
       1,
+      kind,
     );
     // An idle startup is not completion evidence; supervision reconciles without replaying.
     if (observed.status === "working" || observed.status === "blocked") {
@@ -653,6 +694,7 @@ export function workerRecord(
     scope: preflight.scope,
     kind: item.kind,
     name: item.name,
+    ...(item.agent === "claude" ? { agent_kind: "claude" as const } : {}),
     role: item.role,
     controller_id: state.store.controllerId,
     launch_id: launchId,
@@ -719,7 +761,7 @@ const taskTool: ToolFactory = (pi) => {
     label: "Orchestrator task",
     approval: "exec",
     description:
-      "Launch visible OMP workers for one scope and machine per call. Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
+      "Launch visible workers for one scope and machine per call. agent picks OMP (default) or claude (Claude Code, local machine only; model is an optional Claude Code alias or full name with optional :effort low|medium|high|xhigh|max; no role). Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
     parameters: z.union([
       z
         .object({
@@ -733,6 +775,7 @@ const taskTool: ToolFactory = (pi) => {
                     kind: z.literal("implementation"),
                     name: z.string(),
                     task: z.string(),
+                    agent: z.enum(["omp", "claude"]).optional(),
                     role: z.string().optional(),
                     model: z.string().optional(),
                     pushTo: z.string().optional(),
@@ -745,6 +788,7 @@ const taskTool: ToolFactory = (pi) => {
                     kind: z.literal("scout"),
                     name: z.string(),
                     task: z.string(),
+                    agent: z.enum(["omp", "claude"]).optional(),
                     role: z.string().optional(),
                     model: z.string().optional(),
                     startFrom: z.string().optional(),
@@ -768,6 +812,7 @@ const taskTool: ToolFactory = (pi) => {
                   kind: z.literal("scout"),
                   name: z.string(),
                   task: z.string(),
+                  agent: z.enum(["omp", "claude"]).optional(),
                   role: z.string().optional(),
                   model: z.string().optional(),
                 })

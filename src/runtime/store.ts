@@ -77,6 +77,7 @@ const FIELDS: readonly Field[] = [
   ["delivery_receipt_json", "delivery_receipt", false, "json"],
   ["cleanup_phase", "cleanup_phase", false],
   ["terminal_outcome_json", "terminal_outcome", false, "json"],
+  ["agent_kind", "agent_kind", false],
 ];
 const workerTable = (name: string) =>
   `CREATE TABLE ${name} (${FIELDS.map(([column, , required]) => `${column} TEXT${column === "name" ? " PRIMARY KEY" : required ? " NOT NULL" : ""}`).join(", ")}, launched_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
@@ -177,9 +178,11 @@ export function validateWorkerRecord(record: WorkerRecord): void {
     throw new Error("Project worker requires project identity");
   if (record.scope === "project" && record.worktree && (!record.lease_id || !record.lease_holder))
     throw new Error("Project directory requires lease identity");
+  if (record.agent_kind !== undefined) z.literal("claude").parse(record.agent_kind);
   if (record.agent_binding) {
     agentBindingSchema.parse(record.agent_binding);
     if (
+      record.agent_binding.identity !== (record.agent_kind ?? "omp") ||
       record.agent_binding.agentName !== record.agent_name ||
       record.agent_binding.session !== record.target.session ||
       record.agent_binding.paneId !== record.pane_id ||
@@ -343,6 +346,15 @@ export class WorkerStore {
               this.#db.run("ALTER TABLE workers_v2 RENAME TO workers");
             } else this.#db.run(workerTable("workers"));
           }
+          // Optional columns added within schema v2; older code ignores them.
+          const columns = new Set(
+            (this.#db.query("PRAGMA table_info(workers)").all() as { name: string }[]).map(
+              (row) => row.name,
+            ),
+          );
+          for (const [column, , required] of FIELDS)
+            if (!columns.has(column) && !required)
+              this.#db.run(`ALTER TABLE workers ADD COLUMN ${column} TEXT`);
           this.#db.run(
             "CREATE TABLE IF NOT EXISTS owner (id INTEGER PRIMARY KEY CHECK (id = 1), pid INTEGER NOT NULL, token TEXT NOT NULL, claimed_at TEXT NOT NULL)",
           );

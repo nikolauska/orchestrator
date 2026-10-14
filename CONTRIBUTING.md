@@ -27,6 +27,7 @@ src/runtime/report-transfer.ts                    Controller-local report collec
 src/runtime/spaces.ts                             Herdr project and research space helpers
 src/runtime/{git,herdr,omp,treehouse,session}.ts    CLI and session-file wrappers
 .omp/worker-config.yml                             OMP settings overlay passed to every worker
+.omp/claude-worker-settings.json                   Approved Claude Code permission settings for Claude workers
 .omp/projects.json                                 Local project registry; ignored, never commit
 .omp/model-preferences.json                        Local model preferences; ignored, never commit
 .omp/orchestrator.db                               Local worker state; ignored, never commit
@@ -50,6 +51,7 @@ tests/workers.test.ts                              Workers tool behavior tests
 tests/usage.test.ts                                Usage summary behavior tests
 tests/models.test.ts                               Models tool behavior tests
 tests/mcp.test.ts                                  MCP adapter protocol, schema and channel tests
+tests/claude-workers.test.ts                       Claude Code worker launch, transcript and storage tests
 ```
 
 ## Conventions

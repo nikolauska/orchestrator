@@ -74,7 +74,7 @@ function attachHerdr(fake: FakeExec, root: string): void {
         },
       });
     if (command === "herdr" && args[0] === "integration")
-      return { code: 0, stdout: "omp: current (v10) (host overlay)", stderr: "" };
+      return { code: 0, stdout: fake.integrationStatus, stderr: "" };
     if (command === "herdr" && args[0] === "agent" && args[1] === "get" && !panes.has(args[2]!))
       return {
         code: 1,

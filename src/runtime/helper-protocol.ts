@@ -68,7 +68,7 @@ export type HostError = z.infer<typeof hostErrorSchema>;
 export const agentBindingSchema = z
   .object({
     revision: count.refine((v) => v > 0),
-    identity: z.literal("omp"),
+    identity: z.enum(["omp", "claude"]),
     agentName: str,
     session: str,
     workspaceId: str,
@@ -334,6 +334,11 @@ export const hostArgsSchemas = {
         context: configurationContextSchema.optional(),
         requiredOverlaySha256: digestSchema,
         requiredTools: strings.optional(),
+        /** Worker agents the batch launches; omitted means OMP only. */
+        agents: z
+          .array(z.enum(["omp", "claude"]))
+          .min(1)
+          .optional(),
       })
       .strict(),
     z
@@ -342,6 +347,11 @@ export const hostArgsSchemas = {
         context: configurationContextSchema.optional(),
         requiredOverlaySha256: digestSchema,
         requiredTools: strings.optional(),
+        /** Worker agents the batch launches; omitted means OMP only. */
+        agents: z
+          .array(z.enum(["omp", "claude"]))
+          .min(1)
+          .optional(),
       })
       .strict(),
   ]),

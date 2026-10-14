@@ -364,7 +364,7 @@ test("session reads require the exact worker binding and survive absent response
   ).rejects.toMatchObject({ detail: { code: "AGENT_MISMATCH" } });
   await rm(sessionPath);
   expect(await f.call("session.last-response", { launchId, sessionPath })).toEqual({
-    unavailableReason: "Bound OMP session file is unavailable.",
+    unavailableReason: "Bound agent session file is unavailable.",
   });
 });
 

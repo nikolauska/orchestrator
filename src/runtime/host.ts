@@ -29,6 +29,7 @@ import {
   reportReceiptSchema,
   validateHostRequest,
   validateHostResult,
+  type AgentBinding,
   type AllocatedWorker,
   type DeliveryReceipt,
   type HelperConfiguration,
@@ -63,6 +64,8 @@ export type HostRuntime = {
   configurationPath?: string;
   installationPath?: string;
   sessionRoots?: string[];
+  /** Overrides the Claude Code transcript root for Claude worker sessions. */
+  claudeSessionRoots?: string[];
   discoverExecutable?: (name: string) => string | null;
 };
 const workerSchema = z
@@ -407,6 +410,24 @@ async function integrationCheck(
     version: match[1]!,
     capabilities: ["omp-session-reference"],
   };
+}
+
+async function claudeCheck(
+  runtime: HostRuntime,
+): Promise<HostResult<"preflight">["tools"][number]> {
+  const executable = (runtime.discoverExecutable ?? Bun.which)("claude");
+  if (!executable || /\.(?:cmd|bat|ps1)$/i.test(executable))
+    throw new HostFailure(
+      "PREREQUISITE_MISSING",
+      "Claude Code is unavailable as a native executable on this host.",
+      { remedy: "Manually install Claude Code and sign it in for this user." },
+    );
+  const result = await runtime.deps.exec(executable, ["--version"], { timeout: 30_000 });
+  if (result.code || result.killed)
+    throw new HostFailure("PREREQUISITE_MISSING", "Claude Code --version failed on this host.", {
+      remedy: "Repair the Claude Code installation manually.",
+    });
+  return { name: "claude", available: true, version: result.stdout.trim(), capabilities: [] };
 }
 
 async function settings(
@@ -1442,7 +1463,11 @@ async function execute(
           { remedy: "Manually restore approved overlay bytes; no configuration is copied." },
         );
       if (request.args.scope === "project") await gitRoot(runtime, request.args.projectPath);
-      const names = request.args.scope === "project" ? ["git", "treehouse", "omp"] : ["omp"];
+      const agents = new Set(request.args.agents ?? ["omp"]);
+      const names = [
+        ...(request.args.scope === "project" ? ["git", "treehouse"] : []),
+        ...(agents.has("omp") ? ["omp"] : []),
+      ];
       const tools = [];
       for (const name of new Set([...names, ...(request.args.requiredTools ?? [])])) {
         if (name !== "git" && name !== "treehouse" && name !== "omp") {
@@ -1481,9 +1506,12 @@ async function execute(
         }
         tools.push({ name, available: true, version, capabilities });
       }
-      tools.push(await integrationCheck(runtime));
-      await omp.chatModels(hostDeps(runtime, context), context.cwd);
-      await omp.modelRoles(hostDeps(runtime, context), context.cwd);
+      if (agents.has("omp")) {
+        tools.push(await integrationCheck(runtime));
+        await omp.chatModels(hostDeps(runtime, context), context.cwd);
+        await omp.modelRoles(hostDeps(runtime, context), context.cwd);
+      }
+      if (agents.has("claude")) tools.push(await claudeCheck(runtime));
       return {
         host: hello(runtime),
         context,
@@ -1595,7 +1623,7 @@ async function execute(
           "Relaunch cannot move the worker to another Herdr session.",
         );
       if (binding.sessionPath) {
-        const sessionPath = await validateSession(runtime, binding.sessionPath);
+        const sessionPath = await validateSession(runtime, binding.sessionPath, binding.identity);
         binding.sessionPath = sessionPath.path;
         worker.sessionIdentity = sessionPath.pathKey;
       } else delete worker.sessionIdentity;
@@ -1646,15 +1674,16 @@ async function execute(
       const worker = ownedWorker(session, request.args.launchId);
       if (!worker.binding?.sessionPath)
         return {
-          unavailableReason: "No verified OMP session reference was bound for this worker.",
+          unavailableReason: "No verified agent session reference was bound for this worker.",
         };
       let requested: HostPath, bound: HostPath;
       try {
-        requested = await validateSession(runtime, request.args.sessionPath);
-        bound = await validateSession(runtime, worker.binding.sessionPath);
+        const kind = worker.binding.identity;
+        requested = await validateSession(runtime, request.args.sessionPath, kind);
+        bound = await validateSession(runtime, worker.binding.sessionPath, kind);
       } catch (error) {
         if (error instanceof Error && "code" in error && error.code === "ENOENT")
-          return { unavailableReason: "Bound OMP session file is unavailable." };
+          return { unavailableReason: "Bound agent session file is unavailable." };
         throw error;
       }
       if (requested.pathKey !== bound.pathKey)
@@ -1665,12 +1694,12 @@ async function execute(
       if (worker.sessionIdentity && bound.pathKey !== worker.sessionIdentity)
         throw new HostFailure(
           "AGENT_MISMATCH",
-          "Bound OMP session file identity changed; retain the worker and verify a new binding revision.",
+          "Bound agent session file identity changed; retain the worker and verify a new binding revision.",
         );
       const text = await lastResponse(bound.path);
       return text
         ? { text }
-        : { unavailableReason: "No assistant response is available in the bound OMP session." };
+        : { unavailableReason: "No assistant response is available in the bound agent session." };
     }
     case "report.read":
       throw new HostFailure("INVALID_REQUEST", "Use streamHostReport for streamed report export.");
@@ -1795,13 +1824,26 @@ function sessionsDir(agentDir: string): string {
   return join(agentDir, "sessions");
 }
 
-async function validateSession(runtime: HostRuntime, value: string): Promise<HostPath> {
+/** Claude Code keeps one transcript per session under its configuration's projects directory. */
+function claudeSessionsDir(): string {
+  return join(process.env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "projects");
+}
+
+async function validateSession(
+  runtime: HostRuntime,
+  value: string,
+  kind: AgentBinding["identity"] = "omp",
+): Promise<HostPath> {
   const path = await canonicalPath(value);
-  const context = await contextFor(runtime);
-  const configDir = await execCommand(hostDeps(runtime, context), "omp", ["config", "path"], {
-    cwd: context.cwd,
-  });
-  const roots = runtime.sessionRoots ?? [sessionsDir(configDir)];
+  let roots: string[];
+  if (kind === "claude") roots = runtime.claudeSessionRoots ?? [claudeSessionsDir()];
+  else {
+    const context = await contextFor(runtime);
+    const configDir = await execCommand(hostDeps(runtime, context), "omp", ["config", "path"], {
+      cwd: context.cwd,
+    });
+    roots = runtime.sessionRoots ?? [sessionsDir(configDir)];
+  }
   for (const root of roots) {
     try {
       await assertContained(root, path, { allowEqual: false });
@@ -1813,7 +1855,7 @@ async function validateSession(runtime: HostRuntime, value: string): Promise<Hos
   }
   throw new HostFailure(
     "AGENT_MISMATCH",
-    "Session access is restricted to the provisioned OMP session root and bound worker reference.",
+    "Session access is restricted to the agent's provisioned session root and bound worker reference.",
   );
 }
 

@@ -1,10 +1,10 @@
 # Task tool
 
-The Task tool starts visible OMP workers for one registered project or for research outside every registered project. Each request has exactly one scope and one machine. Project work uses the machine saved in its registration; a project request cannot override it.
+The Task tool starts visible OMP or Claude Code workers for one registered project or for research outside every registered project. Each request has exactly one scope and one machine. Project work uses the machine saved in its registration; a project request cannot override it.
 
 The tool is named `orchestrator_task`. A project request takes `project`, shared `context`, and `tasks`. An independent request instead takes `scope: "independent"`, shared `context`, `tasks`, and optional `machine`. No request can combine `project` with `scope` or `machine`.
 
-Each task needs `kind`, `name`, and a nonempty `task`; it may set either `role` or `model`, not both. Project implementations also accept `startFrom`, `pushTo`, and `hold`; project scouts accept only `startFrom` in addition to the common fields. Independent scouts accept none of those project options. Worker names are 1–64 ASCII characters, begin with a letter or digit, and contain only letters, digits, `.`, `-`, or `_`. A name that is invalid, repeated within the request, or already used by a retained worker refuses the whole request before any worker starts. The name labels the worker's Herdr space or tab and its report file, so short names stay readable.
+Each task needs `kind`, `name`, and a nonempty `task`; it may set either `role` or `model`, not both, and an optional `agent`. Project implementations also accept `startFrom`, `pushTo`, and `hold`; project scouts accept only `startFrom` in addition to the common fields. Independent scouts accept none of those project options. Worker names are 1–64 ASCII characters, begin with a letter or digit, and contain only letters, digits, `.`, `-`, or `_`. A name that is invalid, repeated within the request, or already used by a retained worker refuses the whole request before any worker starts. The name labels the worker's Herdr space or tab and its report file, so short names stay readable.
 
 ```json
 {
@@ -20,6 +20,17 @@ Each task needs `kind`, `name`, and a nonempty `task`; it may set either `role` 
   ]
 }
 ```
+
+## Worker agents
+
+`agent` selects the worker: `omp` (the default) or `claude` for Claude Code. A Claude Code worker:
+
+- runs only on the local machine; a request that would start one on a saved remote machine is refused before anything is allocated;
+- takes an optional `model`, either a Claude Code alias such as `opus` or a full model name, with an optional `:low`, `:medium`, `:high`, `:xhigh` or `:max` effort suffix. It does not accept `role`. Without a model it uses the host's Claude Code default;
+- starts with the approved `.omp/claude-worker-settings.json`. That file accepts file edits and allows common read, Git and build commands. It denies `git push`, `git remote`, `git config` and subagents. Anything else asks in the worker's tab, and the worker is then reported as blocked;
+- requires Claude Code and Herdr's Claude integration on the machine. A batch with only Claude workers does not need OMP's model catalog.
+
+A request can mix OMP and Claude Code workers. Each worker's `agent` appears in its launch and list results.
 
 ## Project work
 

@@ -34,6 +34,8 @@ export type HerdrWorkspace = {
   linked: boolean;
 };
 export type HerdrOptions = { signal?: AbortSignal };
+export type AgentKind = AgentBinding["identity"];
+export const AGENT_KINDS: readonly AgentKind[] = ["omp", "claude"];
 export type HerdrIntegrationEvidence = { targetKey: string; check: ToolCheck };
 export type HerdrPreflight = { session: string; version: string; protocol: number };
 
@@ -196,6 +198,10 @@ async function command(
 export const WORKER_CONFIG = fileURLToPath(
   new URL("../../.omp/worker-config.yml", import.meta.url),
 );
+/** Approved Claude Code settings for unattended workers; local targets only. */
+export const CLAUDE_WORKER_SETTINGS = fileURLToPath(
+  new URL("../../.omp/claude-worker-settings.json", import.meta.url),
+);
 export async function resolveLocalHerdrTarget(
   deps: RuntimeDeps,
   paths: { runtimeRoot: string; neutralRoot: string; hostId: string },
@@ -224,8 +230,9 @@ export async function resolveLocalHerdrTarget(
 export async function ensureIntegration(
   deps: RuntimeDeps,
   target: ExecutionTarget,
-  options: HerdrOptions & { integration?: HerdrIntegrationEvidence } = {},
+  options: HerdrOptions & { integration?: HerdrIntegrationEvidence; agents?: AgentKind[] } = {},
 ): Promise<HerdrPreflight> {
+  const agents = new Set(options.agents ?? ["omp"]);
   const status = json(await command(deps, target, ["status", "server", "--json"], false, options));
   const session = serverSession(status);
   if (session !== target.session)
@@ -278,7 +285,7 @@ export async function ensureIntegration(
   if (target.kind === "local") {
     const installed = await execute(deps, ["integration", "status"], false, options.signal, 10_000);
     const match = /^omp: (?:current|outdated) \(v(\d+)\)/m.exec(installed);
-    if (!match || Number(match[1]) < 3)
+    if (agents.has("omp") && (!match || Number(match[1]) < 3))
       throw new HerdrError(
         "PREREQUISITE_MISSING",
         "Herdr OMP integration v3+ is required on the target",
@@ -286,7 +293,23 @@ export async function ensureIntegration(
         "user_action",
         "Run herdr integration install omp on that host and restart OMP.",
       );
-  } else {
+    // Herdr reports a Claude worker's transcript only through its Claude hook integration.
+    if (agents.has("claude") && !/^claude: (?:current|outdated) \(v\d+\)/m.test(installed))
+      throw new HerdrError(
+        "PREREQUISITE_MISSING",
+        "Herdr's Claude Code integration is required for Claude workers",
+        "none",
+        "user_action",
+        "Run herdr integration install claude on this host.",
+      );
+  } else if (agents.has("claude"))
+    throw new HerdrError(
+      "PREREQUISITE_MISSING",
+      "Claude Code workers currently run only on the local machine",
+      "none",
+      "user_action",
+    );
+  else {
     // Herdr does not forward installation inspection; the host preflight must supply it.
     const evidence = options.integration;
     if (
@@ -356,9 +379,10 @@ export function agentBinding(
   cwd: HostPath,
   expected: { name: string; paneId: string; tabId: string; workspaceId: string },
   revision: number,
+  kind: AgentKind = "omp",
 ): AgentBinding {
   if (
-    agent.identity !== "omp" ||
+    agent.identity !== kind ||
     agent.name !== expected.name ||
     agent.paneId !== expected.paneId ||
     agent.tabId !== expected.tabId ||
@@ -367,11 +391,11 @@ export function agentBinding(
   )
     throw new HerdrError(
       "AGENT_MISMATCH",
-      "Observed OMP agent does not match its allocated terminal and directory",
+      "Observed agent does not match its allocated kind, terminal and directory",
     );
   return {
     revision,
-    identity: "omp",
+    identity: kind,
     agentName: expected.name,
     session: target.session,
     paneId: expected.paneId,
@@ -385,8 +409,8 @@ export function agentBinding(
 }
 function sameAgent(before: HerdrAgent, after: HerdrAgent): boolean {
   return (
-    before.identity === "omp" &&
-    after.identity === "omp" &&
+    AGENT_KINDS.includes(before.identity as AgentKind) &&
+    after.identity === before.identity &&
     !!before.name &&
     before.name === after.name &&
     !!before.paneId &&
@@ -407,12 +431,12 @@ export async function promptAgent(
   target: ExecutionTarget,
   pane: string | undefined,
   message: string,
-  options: HerdrOptions = {},
+  options: HerdrOptions & { kind?: AgentKind } = {},
 ): Promise<void> {
   const address = paneRequired(pane);
   const before = await getAgent(deps, target, address, options);
-  if (before.identity !== "omp")
-    throw new HerdrError("AGENT_MISMATCH", "Worker is not the expected OMP agent");
+  if (before.identity !== (options.kind ?? "omp"))
+    throw new HerdrError("AGENT_MISMATCH", "Worker is not the expected agent");
   try {
     await command(
       deps,
@@ -733,6 +757,68 @@ export function startOmpAgent(
       ...(selection.thinking ? ["--thinking", selection.thinking] : []),
     ],
     true,
+    options,
+  );
+}
+export type AgentChoice = { model?: string; thinking?: string };
+export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+export function startClaudeAgent(
+  deps: RuntimeDeps,
+  target: ExecutionTarget,
+  name: string,
+  pane: string,
+  selection: AgentChoice,
+  options: HerdrOptions = {},
+): Promise<string> {
+  if (target.kind !== "local")
+    throw new HerdrError(
+      "PREREQUISITE_MISSING",
+      "Claude Code workers currently run only on the local machine",
+      "none",
+      "user_action",
+    );
+  if (selection.thinking && !(CLAUDE_EFFORTS as readonly string[]).includes(selection.thinking))
+    throw new HerdrError("MODEL_UNAVAILABLE", `Unknown Claude Code effort: ${selection.thinking}`);
+  // The pane already starts in the worker directory; Claude Code has no cwd flag.
+  return command(
+    deps,
+    target,
+    [
+      "agent",
+      "start",
+      name,
+      "--kind",
+      "claude",
+      "--pane",
+      pane,
+      "--",
+      "--settings",
+      CLAUDE_WORKER_SETTINGS,
+      ...(selection.model ? ["--model", selection.model] : []),
+      ...(selection.thinking ? ["--effort", selection.thinking] : []),
+    ],
+    true,
+    options,
+  );
+}
+export function startAgent(
+  deps: RuntimeDeps,
+  target: ExecutionTarget,
+  kind: AgentKind,
+  name: string,
+  pane: string,
+  directory: string,
+  selection: AgentChoice,
+  options: HerdrOptions = {},
+): Promise<string> {
+  if (kind === "claude") return startClaudeAgent(deps, target, name, pane, selection, options);
+  return startOmpAgent(
+    deps,
+    target,
+    name,
+    pane,
+    directory,
+    { model: selection.model ?? "", thinking: selection.thinking },
     options,
   );
 }

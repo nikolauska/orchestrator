@@ -157,6 +157,7 @@ export class FakeExec {
   shellWaitFails = false;
   spaceCloseFails = false;
   agentIdentity = "omp";
+  integrationStatus = "omp: current (v10) (host overlay)";
   readonly goneAgents = new Set<string>();
   readonly workspaces: FakeWorkspace[] = [];
   #reportedPromptStall = false;
@@ -224,9 +225,9 @@ export class FakeExec {
               agent_session: this.sessionless.has(pane)
                 ? null
                 : {
-                    agent: "omp",
+                    agent: this.agentIdentity,
                     kind: "path",
-                    source: "herdr:omp",
+                    source: `herdr:${this.agentIdentity}`,
                     value: await this.#session(pane),
                   },
             },
@@ -487,6 +488,7 @@ export function fixtureHost(
     {
       local: true,
       sessionRoots: [join(root, "sessions")],
+      claudeSessionRoots: [join(root, "sessions")],
       discoverExecutable: (name) => join(tools, name),
     },
   );

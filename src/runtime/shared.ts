@@ -83,6 +83,8 @@ export type TaskItem = {
   kind: TaskKind;
   name: string;
   task: string;
+  /** Worker agent; omitted means OMP. */
+  agent?: "omp" | "claude";
   role?: string;
   /** Exact `provider/id`, optionally with a `:level` thinking suffix; mutually exclusive with role. */
   model?: string;
@@ -135,6 +137,8 @@ export type WorkerRecord = {
   project?: string;
   projectPath?: string;
   name: string;
+  /** Worker agent; absent means OMP, which every older record is. */
+  agent_kind?: "claude";
   role?: string;
   model?: string;
   thinking?: string;

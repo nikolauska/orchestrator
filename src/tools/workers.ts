@@ -36,7 +36,7 @@ import {
   interruptAgent,
   promptAgent,
   readAgent,
-  startOmpAgent,
+  startAgent,
   waitForAgent,
   waitForShell,
   resolveLocalHerdrTarget,
@@ -215,6 +215,7 @@ export function publicRecord(record: WorkerRecord): Record<string, unknown> {
     kind: record.kind,
     ...(record.scope === "independent" ? { scope: "independent" } : { project: record.project }),
     name: record.name,
+    ...(record.agent_kind ? { agent: record.agent_kind } : {}),
     ...(record.role ? { role: record.role } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.thinking ? { thinking: record.thinking } : {}),
@@ -497,12 +498,13 @@ export async function verifyWorkerAgent(
         workspaceId: record.workspace_id!,
       },
       binding.revision,
+      binding.identity,
     );
     if (
       (binding.incarnation && binding.incarnation !== agent.incarnation) ||
       (binding.sessionPath && binding.sessionPath !== agent.sessionPath)
     )
-      throw new HerdrError("AGENT_MISMATCH", "Worker terminal or OMP session was replaced");
+      throw new HerdrError("AGENT_MISMATCH", "Worker terminal or agent session was replaced");
     updateConnection(state, record, "herdr");
     return agent;
   } catch (error) {
@@ -586,7 +588,7 @@ export async function verifyWorkerClosure(
       );
     const sessionPath = stringAt(pane, ["agent_session", "value"]);
     if (sessionPath && binding.sessionPath && sessionPath !== binding.sessionPath)
-      throw new HerdrError("AGENT_MISMATCH", "Dead terminal holds a replacement OMP session");
+      throw new HerdrError("AGENT_MISMATCH", "Dead terminal holds a replacement agent session");
     updateConnection(state, record, "herdr");
     return true;
   } catch (error) {
@@ -988,7 +990,7 @@ export async function recoverWorker(
   let start = operations.findLast((entry) => entry.operation === "agent.start");
   if (relaunch && !start && open?.state === "confirmed") {
     const directory = lookup.resource!.directory.path;
-    const choice = { model: record.model!, thinking: record.thinking };
+    const choice = { model: record.model, thinking: record.thinking };
     record.phase = "starting_agent";
     persist(state, record);
     await waitForShell(state.deps, target, record.pane_id!, { signal });
@@ -999,9 +1001,16 @@ export async function recoverWorker(
       alias: record.agent_name,
     });
     await runLaunchOperation(state, start, () =>
-      startOmpAgent(state.deps, target, record.agent_name!, record.pane_id!, directory, choice, {
-        signal,
-      }),
+      startAgent(
+        state.deps,
+        target,
+        record.agent_kind ?? "omp",
+        record.agent_name!,
+        record.pane_id!,
+        directory,
+        choice,
+        { signal },
+      ),
     );
   }
   if (!start) {
@@ -1050,6 +1059,7 @@ export async function recoverWorker(
             workspaceId: record.workspace_id!,
           },
           revision,
+          record.agent_kind ?? "omp",
         );
   if (lookup.binding && lookup.binding.revision >= binding.revision) {
     const original = binding;
@@ -1089,7 +1099,10 @@ export async function recoverWorker(
       prompt: text,
     });
     await runLaunchOperation(state, prompt, () =>
-      promptAgent(state.deps, target, record.pane_id, text, { signal }),
+      promptAgent(state.deps, target, record.pane_id, text, {
+        signal,
+        kind: record.agent_kind ?? "omp",
+      }),
     );
     agent = await verifyWorkerAgent(state, record, signal);
   }
@@ -1689,6 +1702,7 @@ async function sendWorker(
     await runLaunchOperation(state, intent, () =>
       promptAgent(state.deps, record.target as ExecutionTarget, record.pane_id, message, {
         signal,
+        kind: record.agent_kind ?? "omp",
       }),
     );
     const agent = await verifyWorkerAgent(state, record, signal);

@@ -442,6 +442,7 @@ export async function checkMachine(
       );
       await ensureIntegration(pi, check.target, {
         signal: options.signal,
+        ...(options.preflight?.agents ? { agents: options.preflight.agents } : {}),
         ...(integration
           ? { integration: { targetKey: targetKey(check.target), check: integration } }
           : {}),
