@@ -44,7 +44,7 @@ import {
   type HerdrAgent,
 } from "../runtime/herdr";
 import { projectSpace, researchSpace, workerLabel } from "../runtime/spaces";
-import { WorkerStore } from "../runtime/store";
+import { WorkerStore, type SupervisorEvent } from "../runtime/store";
 import {
   errorMessage,
   NAME,
@@ -144,13 +144,50 @@ export function isCurrent(state: WorkerState, record: WorkerRecord): boolean {
   return state.active && state.records.get(record.name) === record;
 }
 
+export function eventMessage(
+  outcome: Record<string, unknown>,
+  heading = "Visible worker result",
+): string {
+  return `${heading}:\n${JSON.stringify(outcome, null, 2)}`;
+}
+
+/** Records the event durably first, so a session that ends before delivery can still read it. */
 export function notify(
   state: WorkerState,
   outcome: Record<string, unknown>,
   heading = "Visible worker result",
 ): void {
+  const worker = typeof outcome.name === "string" ? outcome.name : undefined;
+  let event: SupervisorEvent;
+  try {
+    event = state.store.recordEvent(worker, eventMessage(outcome, heading));
+  } catch (error) {
+    // Keep the wake: losing durability is better than losing the root's only notice.
+    state.deps.logger.warn?.("Supervisor event could not be recorded", {
+      error: errorMessage(error),
+    });
+    if (state.active) state.deps.notify(eventMessage(outcome, heading));
+    return;
+  }
+  deliver(state, event);
+}
+
+/** Pending events stay readable through `workers events` and are retried at the next session start. */
+export function deliver(state: WorkerState, event: SupervisorEvent): void {
   if (!state.active) return;
-  state.deps.notify(`${heading}:\n${JSON.stringify(outcome, null, 2)}`);
+  try {
+    state.deps.notify(event.message);
+    state.store.markDelivered([event.id]);
+  } catch (error) {
+    state.deps.logger.warn?.("Supervisor event delivery failed; it stays pending", {
+      event: event.id,
+      error: errorMessage(error),
+    });
+  }
+}
+
+export function flushEvents(state: WorkerState): void {
+  for (const event of state.store.pendingEvents()) deliver(state, event);
 }
 
 export function hasWorker(state: WorkerState, name: string): boolean {
@@ -278,7 +315,10 @@ export function handleSession(state: WorkerState, reason: string): void {
   if (reason === "start" || reason === "switch") {
     state.active = true;
     // Resume without waiting for a tool call so finished workers still deliver and wake the root.
-    if (claimOwnership(state)) void resumeWorkers(state);
+    if (claimOwnership(state)) {
+      flushEvents(state);
+      void resumeWorkers(state);
+    }
   }
 }
 
@@ -1195,6 +1235,13 @@ export async function runWorkers(
         ? "Visible workers"
         : `Visible workers (read-only; OMP session pid ${state.store.owner()?.pid} supervises them)`;
       return text(`${heading}:\n${JSON.stringify(records, null, 2)}`, records);
+    }
+    if (params.op === "events") {
+      const events = params.all ? state.store.recentEvents() : state.store.pendingEvents();
+      // Only the supervising session consumes events; another session's look must not steal them.
+      if (owner) state.store.markDelivered(events.filter((e) => !e.deliveredAt).map((e) => e.id));
+      const heading = params.all ? "Recent supervisor events" : "Pending supervisor events";
+      return text(`${heading}:\n${JSON.stringify(events, null, 2)}`, events);
     }
     if (
       !Array.isArray(params.names) ||
@@ -2361,9 +2408,9 @@ async function finishWorker(
       cleanup_phase: record.cleanup_phase,
       cleanup_pending: false,
     };
-    state.store.delete(record.name);
+    const event = state.store.delete(record.name, announce ? eventMessage(completed) : undefined);
     state.records.delete(record.name);
-    if (announce) notify(state, completed);
+    if (event) deliver(state, event);
     return completed;
   } catch (error) {
     record.phase = "retained";
@@ -2439,9 +2486,10 @@ const workersTool: ToolFactory = (pi) => {
     label: "Workers",
     approval: "exec",
     description:
-      "Supervise workers launched by orchestrator_task; use it instead of hub. Ops: list; read recent screen lines; send an answer or changed requirement; interrupt a running turn (send resumes it); relaunch a dead or stuck worker in its same worktree with a recovery note; land a held implementation that is ready; close workers. close refuses implementation work that is uncommitted or undelivered unless discard is true. Only the supervising OMP session can change workers; other sessions can list and read.",
+      "Supervise workers launched by orchestrator_task; use it instead of hub. Ops: list; events returns supervisor notifications not yet delivered to this session (all: recent history too); read recent screen lines; send an answer or changed requirement; interrupt a running turn (send resumes it); relaunch a dead or stuck worker in its same worktree with a recovery note; land a held implementation that is ready; close workers. close refuses implementation work that is uncommitted or undelivered unless discard is true. Only the supervising OMP session can change workers; other sessions can list and read.",
     parameters: z.union([
       z.object({ op: z.literal("list"), machine: z.string().optional() }).strict(),
+      z.object({ op: z.literal("events"), all: z.boolean().optional() }).strict(),
       z
         .object({
           op: z.literal("read"),

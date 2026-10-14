@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { WorkerStore, type ControllerOperation } from "../src/runtime/store";
+import { EVENT_HISTORY, WorkerStore, type ControllerOperation } from "../src/runtime/store";
 import { normalizeProjectRegistry, readProjectRegistry } from "../src/runtime/project-registry";
 import { validateExecutionTarget } from "../src/runtime/execution";
 import {
@@ -212,6 +212,40 @@ describe("durable schema v2", () => {
       { ...operation, state: "uncertain" },
     ]);
     reopened.close();
+  });
+  test("supervisor events persist until delivered and a worker's final event commits with its delete", async () => {
+    const { root } = await fixtureRoot();
+    const path = join(root, "events.db");
+    const store = new WorkerStore(path);
+    store.save(partial());
+    const notice = store.recordEvent(undefined, "notice");
+    const final = store.delete("pending", "result");
+    expect(store.has("pending")).toBe(false);
+    expect(final).toMatchObject({ worker: "pending", message: "result" });
+    store.markDelivered([notice.id]);
+    store.close();
+    const reopened = new WorkerStore(path);
+    expect(reopened.pendingEvents().map((event) => event.message)).toEqual(["result"]);
+    expect(reopened.recentEvents().map((event) => [event.message, !!event.deliveredAt])).toEqual([
+      ["notice", true],
+      ["result", false],
+    ]);
+    reopened.close();
+  });
+  test("prunes only delivered event history beyond its bound", async () => {
+    const { root } = await fixtureRoot();
+    const store = new WorkerStore(join(root, "history.db"));
+    const pending = store.recordEvent("kept", "pending");
+    const delivered = Array.from({ length: EVENT_HISTORY + 5 }, (_, index) =>
+      store.recordEvent(undefined, `delivered ${index}`),
+    );
+    store.markDelivered(delivered.map((event) => event.id));
+    const recent = store.recentEvents(EVENT_HISTORY + 10);
+    expect(recent).toHaveLength(EVENT_HISTORY + 1);
+    expect(recent[0]).toMatchObject({ id: pending.id, worker: "kept" });
+    expect(recent.at(-1)!.message).toBe(`delivered ${EVENT_HISTORY + 4}`);
+    expect(store.pendingEvents()).toEqual([pending]);
+    store.close();
   });
   test("reserved names cannot be reused and retained workers cannot be rerouted", async () => {
     const { root } = await fixtureRoot();

@@ -7,6 +7,7 @@ The Workers tool supervises visible workers started by the Task tool.
 | `op`        | Arguments besides `op`                                         |
 | ----------- | -------------------------------------------------------------- |
 | `list`      | Optional `machine` saved-ID filter; omitted lists all machines |
+| `events`    | Optional `all` (default false)                                 |
 | `read`      | `names`, optional `lines` (1–200; default 40)                  |
 | `send`      | `names`, nonempty `message`                                    |
 | `interrupt` | `names`                                                        |
@@ -39,6 +40,12 @@ Temporary helper or Herdr outages during report collection or delivery, includin
 ## One supervising session
 
 Only one OMP session supervises the workers at a time. Another session opened on the same Orchestrator can list workers and read their screens, but cannot launch, message, interrupt, relaunch, land, or close them. When the supervising session exits, the next session that uses a worker tool takes over.
+
+## Notifications
+
+Every result, blocked question, failure, and notice is recorded before it is sent to the supervising session. A notification the session did not receive, for example because it ended first, stays pending. The next supervising session sends pending notifications when it starts.
+
+`events` returns pending notifications as `{id,worker?,message,createdAt,deliveredAt?}` and, in the supervising session, marks them received. With `all: true` it returns the most recent notifications, received ones included. Another session can read them without marking them received. A finished worker's result is recorded with the removal of its record, so the result remains readable after the worker is gone.
 
 ## Questions and notices
 

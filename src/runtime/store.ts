@@ -267,6 +267,16 @@ export const controllerOperationSchema = z
   })
   .strict();
 export type ControllerOperation = z.infer<typeof controllerOperationSchema>;
+/** A supervision message for the root session; durable until the harness accepts it. */
+export type SupervisorEvent = {
+  id: number;
+  worker?: string;
+  message: string;
+  createdAt: string;
+  deliveredAt?: string;
+};
+/** Delivered events kept for `workers events` history; pending events are never pruned. */
+export const EVENT_HISTORY = 200;
 
 /** Registry writes and version changes share one transaction; a failed migration leaves legacy rows intact. */
 export class WorkerStore {
@@ -338,6 +348,9 @@ export class WorkerStore {
           );
           this.#db.run(
             "CREATE TABLE IF NOT EXISTS operations (id TEXT PRIMARY KEY, launch_id TEXT NOT NULL, worker_name TEXT NOT NULL, channel TEXT NOT NULL, operation TEXT NOT NULL, request_hash TEXT NOT NULL, state TEXT NOT NULL, response_json TEXT, error_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)",
+          );
+          this.#db.run(
+            "CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY AUTOINCREMENT, worker_name TEXT, message TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT)",
           );
           this.setMeta("schema_version", 2);
         })
@@ -441,13 +454,69 @@ export class WorkerStore {
       })
       .immediate();
   }
-  delete(name: string): void {
-    this.#db
+  /** Records the worker's final event in the same transaction, so a crash cannot lose both. */
+  delete(name: string, message?: string): SupervisorEvent | undefined {
+    return this.#db
       .transaction(() => {
         this.#db.query("DELETE FROM operations WHERE worker_name = ?").run(name);
         this.#db.query("DELETE FROM workers WHERE name = ?").run(name);
+        return message === undefined ? undefined : this.#insertEvent(name, message);
       })
       .immediate();
+  }
+  recordEvent(worker: string | undefined, message: string): SupervisorEvent {
+    return this.#insertEvent(worker, message);
+  }
+  #insertEvent(worker: string | undefined, message: string): SupervisorEvent {
+    const createdAt = new Date().toISOString();
+    const row = this.#db
+      .query("INSERT INTO events (worker_name,message,created_at) VALUES (?,?,?) RETURNING id")
+      .get(worker ?? null, message, createdAt) as { id: number };
+    return { id: row.id, ...(worker ? { worker } : {}), message, createdAt };
+  }
+  markDelivered(ids: number[]): void {
+    if (!ids.length) return;
+    const deliveredAt = new Date().toISOString();
+    this.#db
+      .transaction(() => {
+        const mark = this.#db.query(
+          "UPDATE events SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL",
+        );
+        for (const id of ids) mark.run(deliveredAt, id);
+        this.#db
+          .query(
+            "DELETE FROM events WHERE delivered_at IS NOT NULL AND id NOT IN (SELECT id FROM events WHERE delivered_at IS NOT NULL ORDER BY id DESC LIMIT ?)",
+          )
+          .run(EVENT_HISTORY);
+      })
+      .immediate();
+  }
+  pendingEvents(): SupervisorEvent[] {
+    return this.#events("SELECT * FROM events WHERE delivered_at IS NULL ORDER BY id");
+  }
+  /** Newest events last, pending ones included. */
+  recentEvents(limit = EVENT_HISTORY): SupervisorEvent[] {
+    return this.#events(
+      "SELECT * FROM (SELECT * FROM events ORDER BY id DESC LIMIT ?) ORDER BY id",
+      limit,
+    );
+  }
+  #events(sql: string, ...params: number[]): SupervisorEvent[] {
+    return (
+      this.#db.query(sql).all(...params) as {
+        id: number;
+        worker_name: string | null;
+        message: string;
+        created_at: string;
+        delivered_at: string | null;
+      }[]
+    ).map((row) => ({
+      id: row.id,
+      ...(row.worker_name ? { worker: row.worker_name } : {}),
+      message: row.message,
+      createdAt: row.created_at,
+      ...(row.delivered_at ? { deliveredAt: row.delivered_at } : {}),
+    }));
   }
   has(name: string): boolean {
     return !!this.#db.query("SELECT 1 FROM workers WHERE name = ?").get(name);

@@ -97,6 +97,7 @@ export type IndependentTaskParams = { scope: "independent"; context: string; tas
 export type TaskParams = ProjectTaskParams | IndependentTaskParams;
 export type WorkersParams =
   | { op: "list"; machine?: string }
+  | { op: "events"; all?: boolean }
   | { op: "read"; names: string[]; lines?: number }
   | { op: "send"; names: string[]; message: string }
   | { op: "interrupt"; names: string[] }

@@ -13,6 +13,8 @@ import type { StdioSpawn, WorkerRecord } from "../src/runtime/shared";
 import {
   stateFor,
   disposeWorkers,
+  handleSession,
+  notify,
   runWorkers,
   workerHostCall,
   recoverWorker,
@@ -24,6 +26,8 @@ import { canonicalPath } from "../src/runtime/host-paths";
 import type { ExecResult } from "../src/runtime/shared";
 import { validateHostRequest } from "../src/runtime/helper-protocol";
 import { cleanup, eventually, fixtureRoot, register } from "./test-helpers";
+import { zod } from "@oh-my-pi/pi-coding-agent";
+import type { ToolAPI } from "../src/runtime/shared";
 import { FakeExec, runtime, extensionRuntime, launchedPair } from "./herdr-fixtures";
 
 afterEach(cleanup);
@@ -384,6 +388,59 @@ describe("delivery", () => {
     );
     expect(fake.workspaces.map((item) => item.label)).toEqual(["fixture"]);
     expect((await instance.runWorkers({ op: "list" })).details).toEqual([]);
+  });
+
+  test("records settled results as delivered events and lists them in history", async () => {
+    const { messages, instance, fake } = await launchedPair();
+    fake.settle("alpha");
+    await eventually(() => expect(messages.length).toBe(1));
+    expect((await instance.runWorkers({ op: "events" })).details).toEqual([]);
+    const history = (await instance.runWorkers({ op: "events", all: true })).details as Array<{
+      worker?: string;
+      message: string;
+      deliveredAt?: string;
+    }>;
+    expect(history).toHaveLength(1);
+    expect(history[0]).toMatchObject({ worker: "alpha", message: messages[0]!.message });
+    expect(history[0]!.deliveredAt).toBeString();
+  });
+
+  test("keeps undeliverable events pending until read or the next session start", async () => {
+    const { root } = await fixtureRoot();
+    const delivered: string[] = [];
+    let wake = false;
+    const api: ToolAPI = {
+      cwd: root,
+      exec: (async () => ({ stdout: "", stderr: "", code: 1 })) as ToolAPI["exec"],
+      logger: {},
+      zod,
+      notify: (message) => {
+        if (!wake) throw new Error("no wake path");
+        delivered.push(message);
+      },
+    };
+    const state = stateFor(api);
+    try {
+      state.active = true;
+      notify(state, { name: "alpha", status: "failed" });
+      notify(state, { name: "beta", status: "failed" });
+      expect(state.store.pendingEvents().map((event) => event.worker)).toEqual(["alpha", "beta"]);
+      const read = await runWorkers(state, { op: "events" });
+      expect((read.details as Array<{ worker: string }>).map((event) => event.worker)).toEqual([
+        "alpha",
+        "beta",
+      ]);
+      expect(state.store.pendingEvents()).toEqual([]);
+      notify(state, { name: "gamma", status: "failed" });
+      wake = true;
+      handleSession(state, "start");
+      expect(delivered).toHaveLength(1);
+      expect(delivered[0]).toContain('"name": "gamma"');
+      expect(state.store.pendingEvents()).toEqual([]);
+    } finally {
+      disposeWorkers(state);
+      state.store.close();
+    }
   });
 
   test("the extension entry wakes the root session when a worker settles", async () => {
