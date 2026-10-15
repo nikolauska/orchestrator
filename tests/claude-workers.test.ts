@@ -127,6 +127,54 @@ describe("Claude Code workers", () => {
     );
   });
 
+  test("start Remote Control named after the worker and keep it across relaunch", async () => {
+    const { root, fake, instance } = await claudeFixture();
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "shared",
+      tasks: [
+        { kind: "scout", name: "remote", task: "R", agent: "claude", remoteControl: true },
+        { kind: "scout", name: "local", task: "L", agent: "claude" },
+      ],
+    });
+    expect(result.isError).toBeUndefined();
+    expect(result.details).toContainEqual(
+      expect.objectContaining({ name: "remote", remote_control: true }),
+    );
+    const starts = agentStarts(fake);
+    const remote = starts.find((args) => args.includes("pane:remote"))!;
+    expect(remote.slice(remote.indexOf("--remote-control"))).toEqual([
+      "--remote-control",
+      "remote",
+    ]);
+    expect(starts.find((args) => args.includes("pane:local"))).not.toContain("--remote-control");
+
+    instance.dispose();
+    fake.goneAgents.add("pane:remote");
+    const restarted = runtime(root, fake, []);
+    await restarted.runWorkers({ op: "list" });
+    fake.goneAgents.delete("pane:remote");
+    fake.calls.length = 0;
+    await restarted.runWorkers({ op: "relaunch", names: ["remote"], note: "The tab crashed" });
+    const [relaunched] = agentStarts(fake);
+    expect(relaunched).toContain("--remote-control");
+    expect((await restarted.runWorkers({ op: "list" })).details).toContainEqual(
+      expect.objectContaining({ name: "remote", remote_control: true }),
+    );
+  });
+
+  test("refuse Remote Control for OMP workers", async () => {
+    const { fake, instance } = await claudeFixture();
+    const result = await instance.runTask({
+      project: "fixture",
+      context: "shared",
+      tasks: [{ kind: "scout", name: "look", task: "L", remoteControl: true }],
+    } as never);
+    expect(result.isError).toBe(true);
+    expect((result.content[0] as { text: string }).text).toContain("Claude Code worker");
+    expect(agentStarts(fake)).toEqual([]);
+  });
+
   test("refuse OMP roles and malformed models", async () => {
     const { instance } = await claudeFixture();
     const run = (item: Record<string, unknown>) =>

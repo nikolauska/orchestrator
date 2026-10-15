@@ -78,6 +78,7 @@ const FIELDS: readonly Field[] = [
   ["cleanup_phase", "cleanup_phase", false],
   ["terminal_outcome_json", "terminal_outcome", false, "json"],
   ["agent_kind", "agent_kind", false],
+  ["remote_control", "remote_control", false, "flag"],
 ];
 const workerTable = (name: string) =>
   `CREATE TABLE ${name} (${FIELDS.map(([column, , required]) => `${column} TEXT${column === "name" ? " PRIMARY KEY" : required ? " NOT NULL" : ""}`).join(", ")}, launched_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
@@ -179,6 +180,8 @@ export function validateWorkerRecord(record: WorkerRecord): void {
   if (record.scope === "project" && record.worktree && (!record.lease_id || !record.lease_holder))
     throw new Error("Project directory requires lease identity");
   if (record.agent_kind !== undefined) z.literal("claude").parse(record.agent_kind);
+  if (record.remote_control && record.agent_kind !== "claude")
+    throw new Error("Only Claude Code workers can use Remote Control");
   if (record.agent_binding) {
     agentBindingSchema.parse(record.agent_binding);
     if (

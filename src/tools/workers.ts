@@ -216,6 +216,7 @@ export function publicRecord(record: WorkerRecord): Record<string, unknown> {
     ...(record.scope === "independent" ? { scope: "independent" } : { project: record.project }),
     name: record.name,
     ...(record.agent_kind ? { agent: record.agent_kind } : {}),
+    ...(record.remote_control ? { remote_control: true } : {}),
     ...(record.role ? { role: record.role } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.thinking ? { thinking: record.thinking } : {}),
@@ -990,7 +991,11 @@ export async function recoverWorker(
   let start = operations.findLast((entry) => entry.operation === "agent.start");
   if (relaunch && !start && open?.state === "confirmed") {
     const directory = lookup.resource!.directory.path;
-    const choice = { model: record.model, thinking: record.thinking };
+    const choice = {
+      model: record.model,
+      thinking: record.thinking,
+      ...(record.remote_control ? { remoteControl: record.name } : {}),
+    };
     record.phase = "starting_agent";
     persist(state, record);
     await waitForShell(state.deps, target, record.pane_id!, { signal });
@@ -1798,7 +1803,8 @@ async function relaunchWorker(
       reason: "The original assignment was not recorded for this worker",
     };
   const directory = record.worktree ?? record.working_directory;
-  if (!directory || !record.model || !record.agent_binding)
+  // A Claude Code worker without a model ran the host's Claude Code default and relaunches on it.
+  if (!directory || (!record.model && record.agent_kind !== "claude") || !record.agent_binding)
     return {
       ...publicRecord(record),
       relaunch: "refused",

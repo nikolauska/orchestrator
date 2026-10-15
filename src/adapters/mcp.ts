@@ -14,7 +14,8 @@ export const SERVER_NAME = "orchestrator";
 
 const INSTRUCTIONS = `This server provides the orchestrator tools that AGENTS.md names without a prefix: projects, machines, orchestrator_task, workers, reports, usage and models.
 Worker results, blocked questions and notices arrive as <channel source="${SERVER_NAME}"> events; they take the place of the nextTurn messages AGENTS.md describes. Handle each one as AGENTS.md says for that kind of result.
-Events are pushed only when this session was started with the orchestrator channel enabled. Otherwise nothing wakes the session: tell the user, and read pending results with workers op "events".`;
+Events are pushed only when this session was started with the orchestrator channel enabled. Otherwise nothing wakes the session: tell the user, and read pending results with workers op "events".
+When this session is itself a Remote Control session (the user can follow it from another device; CLAUDE_CODE_BRIDGE_SESSION_ID is set in your Bash environment), launch Claude Code workers with remoteControl: true unless the user says otherwise, so they can follow those workers the same way.`;
 
 type JsonObject = Record<string, unknown>;
 

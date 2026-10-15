@@ -167,6 +167,10 @@ function validateTask(params: TaskParams): void {
       throw new Error(
         `Invalid Claude Code model for ${item.name}: ${item.model}; use an alias or full name with optional :${CLAUDE_EFFORTS.join("|")}`,
       );
+    if (item.remoteControl !== undefined && typeof item.remoteControl !== "boolean")
+      throw new Error(`Invalid remoteControl for ${item.name}`);
+    if (item.remoteControl && item.agent !== "claude")
+      throw new Error(`Remote Control needs a Claude Code worker: ${item.name}`);
     if (item.role !== undefined && (typeof item.role !== "string" || !NAME.test(item.role)))
       throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
     if (item.model !== undefined && (typeof item.model !== "string" || !/^\S+$/.test(item.model)))
@@ -526,6 +530,7 @@ async function launchWorker(
     }
     record.model = choice.model;
     record.thinking = choice.thinking;
+    if (record.remote_control) choice = { ...choice, remoteControl: record.name };
     record.prompt = workerPrompt(preflight, context, item, directory, record.report_source_path);
     persist(state, record);
     if (record.report_path) await mkdir(dirname(record.report_path), { recursive: true });
@@ -696,6 +701,7 @@ export function workerRecord(
     kind: item.kind,
     name: item.name,
     ...(item.agent === "claude" ? { agent_kind: "claude" as const } : {}),
+    ...(item.remoteControl ? { remote_control: true } : {}),
     role: item.role,
     controller_id: state.store.controllerId,
     launch_id: launchId,
@@ -762,7 +768,7 @@ const taskTool: ToolFactory = (pi) => {
     label: "Orchestrator task",
     approval: "exec",
     description:
-      "Launch visible workers for one scope and machine per call. agent picks OMP (default) or claude (Claude Code, local machine only; model is an optional Claude Code alias or full name with optional :effort low|medium|high|xhigh|max; no role). Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
+      "Launch visible workers for one scope and machine per call. agent picks OMP (default) or claude (Claude Code, local machine only; model is an optional Claude Code alias or full name with optional :effort low|medium|high|xhigh|max; no role; remoteControl starts it as a Claude Code Remote Control session named after the worker so the user can follow it from claude.ai or the Claude app). Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
     parameters: z.union([
       z
         .object({
@@ -777,6 +783,7 @@ const taskTool: ToolFactory = (pi) => {
                     name: z.string(),
                     task: z.string(),
                     agent: z.enum(["omp", "claude"]).optional(),
+                    remoteControl: z.boolean().optional(),
                     role: z.string().optional(),
                     model: z.string().optional(),
                     pushTo: z.string().optional(),
@@ -790,6 +797,7 @@ const taskTool: ToolFactory = (pi) => {
                     name: z.string(),
                     task: z.string(),
                     agent: z.enum(["omp", "claude"]).optional(),
+                    remoteControl: z.boolean().optional(),
                     role: z.string().optional(),
                     model: z.string().optional(),
                     startFrom: z.string().optional(),
@@ -814,6 +822,7 @@ const taskTool: ToolFactory = (pi) => {
                   name: z.string(),
                   task: z.string(),
                   agent: z.enum(["omp", "claude"]).optional(),
+                  remoteControl: z.boolean().optional(),
                   role: z.string().optional(),
                   model: z.string().optional(),
                 })

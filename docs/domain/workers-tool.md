@@ -67,7 +67,7 @@ After a new message, an earlier completed turn does not count as completion of t
 
 Interrupting a running worker stops its current turn without closing it. An interrupted worker is not delivered, even after a restart; sending it a message resumes the work.
 
-Relaunching starts a fresh agent in the same host, session, worktree or working directory, with its original assignment and a recovery note you provide. Existing changes and commits, report destination, and the exact initial model and thinking level are kept. Supervision then follows the new terminal. If ownership, connection or the outcome of an earlier action is uncertain, the worker and its working location stay recorded instead of blindly repeating the action.
+Relaunching starts a fresh agent in the same host, session, worktree or working directory, with its original assignment and a recovery note you provide. Existing changes and commits, report destination, and the exact initial model and thinking level are kept. A Claude Code worker started without a model relaunches on the host's Claude Code default, and one with Remote Control keeps it. Supervision then follows the new terminal. If ownership, connection or the outcome of an earlier action is uncertain, the worker and its working location stay recorded instead of blindly repeating the action.
 
 ## Holding for review
 

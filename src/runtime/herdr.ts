@@ -764,7 +764,8 @@ export function startOmpAgent(
     options,
   );
 }
-export type AgentChoice = { model?: string; thinking?: string };
+/** remoteControl names the Claude Code Remote Control session; OMP has no equivalent. */
+export type AgentChoice = { model?: string; thinking?: string; remoteControl?: string };
 export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 /** A Claude Code alias or full model name with an optional `:effort`; Claude Code resolves it. */
 export const CLAUDE_MODEL = new RegExp(
@@ -804,6 +805,7 @@ export function startClaudeAgent(
       CLAUDE_WORKER_SETTINGS,
       ...(selection.model ? ["--model", selection.model] : []),
       ...(selection.thinking ? ["--effort", selection.thinking] : []),
+      ...(selection.remoteControl ? ["--remote-control", selection.remoteControl] : []),
     ],
     true,
     options,

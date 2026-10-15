@@ -90,6 +90,8 @@ export type TaskItem = {
   model?: string;
   /** Set by the task tool when it splits a `:level` suffix off `model`; never caller input. */
   thinking?: string;
+  /** Claude Code workers only: start with Remote Control so the user can follow them remotely. */
+  remoteControl?: boolean;
   pushTo?: string;
   startFrom?: string;
   hold?: boolean;
@@ -146,6 +148,8 @@ export type WorkerRecord = {
   name: string;
   /** Worker agent; absent means OMP, which every older record is. */
   agent_kind?: "claude";
+  /** Claude Code Remote Control session, named after the worker; kept across relaunch. */
+  remote_control?: boolean;
   role?: string;
   model?: string;
   thinking?: string;
