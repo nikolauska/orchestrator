@@ -27,7 +27,7 @@ Each task needs `kind`, `name`, and a nonempty `task`; it may set either `role` 
 
 - runs only on the local machine; a request that would start one on a saved remote machine is refused before anything is allocated;
 - takes an optional `model`, either a Claude Code alias such as `opus` or a full model name, with an optional `:low`, `:medium`, `:high`, `:xhigh` or `:max` effort suffix. It does not accept `role`. Without a model it uses the host's Claude Code default;
-- starts with the approved `.omp/claude-worker-settings.json`. That file accepts file edits and allows common read, Git and build commands. It denies `git push`, `git remote`, `git config` and subagents. Anything else asks in the worker's tab, and the worker is then reported as blocked;
+- starts with the approved `.omp/claude-worker-settings.json`. That file runs the worker in Claude Code's auto mode, where a classifier lets routine actions through and blocks risky ones instead of asking. It always denies `git push`, `git remote`, `git config` and subagents. If Claude Code still asks something in the worker's tab, the worker is reported as blocked;
 - requires Claude Code and Herdr's Claude integration on the machine. A batch with only Claude workers does not need OMP's model catalog.
 
 A request can mix OMP and Claude Code workers. Each worker's `agent` appears in its launch and list results.
