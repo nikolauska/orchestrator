@@ -766,6 +766,10 @@ export function startOmpAgent(
 }
 export type AgentChoice = { model?: string; thinking?: string };
 export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+/** A Claude Code alias or full model name with an optional `:effort`; Claude Code resolves it. */
+export const CLAUDE_MODEL = new RegExp(
+  `^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]*(?::(?:${CLAUDE_EFFORTS.join("|")}))?$`,
+);
 export function startClaudeAgent(
   deps: RuntimeDeps,
   target: ExecutionTarget,

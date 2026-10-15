@@ -10,11 +10,21 @@ import {
   type OmpQueryAPI,
   type OmpSelector,
 } from "../runtime/omp";
+import { CLAUDE_CODE_ALIASES } from "../runtime/claude";
+import { CLAUDE_EFFORTS, CLAUDE_MODEL } from "../runtime/herdr";
 import { errorMessage, text, type ModelsParams, type ToolAPI } from "../runtime/shared";
 
+/** `agent: "claude"` marks a Claude Code model value; absent means an OMP catalog model. */
 export type ModelPreference =
-  | { stance: "prefer"; for?: string[]; rank?: number; note?: string; updated_at: string }
-  | { stance: "avoid"; note?: string; updated_at: string };
+  | {
+      stance: "prefer";
+      agent?: "claude";
+      for?: string[];
+      rank?: number;
+      note?: string;
+      updated_at: string;
+    }
+  | { stance: "avoid"; agent?: "claude"; note?: string; updated_at: string };
 
 export type HostModelsParams =
   | (Exclude<ModelsParams, { op: "forget" }> & OmpSelector)
@@ -22,12 +32,14 @@ export type HostModelsParams =
 export type ModelRow = {
   /** Exact value for `orchestrator_task` `model`, thinking suffix included. */
   model: string;
+  /** Present for Claude Code models, which launch with orchestrator_task `agent: "claude"`. */
+  agent?: "claude";
   provider: string;
   name?: string;
   thinking_levels: string[];
   context_window?: number;
   max_tokens?: number;
-  input: string[];
+  input?: string[];
   cost_per_mtok?: { input: number; output: number };
   roles?: string[];
   preference?: ModelPreference;
@@ -42,19 +54,21 @@ function preferencesPath(root: string): string {
 function preferencesSchema(z: ToolAPI["zod"]) {
   const note = z.string().optional();
   const updated_at = z.string();
+  const agent = z.literal("claude").optional();
   return z.record(
     z.string(),
     z.union([
       z
         .object({
           stance: z.literal("prefer"),
+          agent,
           for: z.array(z.string()).optional(),
           rank: z.number().int().min(1).optional(),
           note,
           updated_at,
         })
         .strict(),
-      z.object({ stance: z.literal("avoid"), note, updated_at }).strict(),
+      z.object({ stance: z.literal("avoid"), agent, note, updated_at }).strict(),
     ]),
   );
 }
@@ -119,6 +133,18 @@ function row(
   };
 }
 
+const CLAUDE_PROVIDER = "claude-code";
+
+function claudeRow(model: string, preference: ModelPreference | undefined): ModelRow {
+  return {
+    model,
+    agent: "claude",
+    provider: CLAUDE_PROVIDER,
+    thinking_levels: [...CLAUDE_EFFORTS],
+    ...(preference ? { preference } : {}),
+  };
+}
+
 /** Ranked preferences first, then unranked ones, role targets, the rest, and avoided models last. */
 function order(item: ModelRow): number[] {
   const preference = item.preference;
@@ -175,17 +201,29 @@ export async function listModels(
   // Stale entries stay listed as issues instead of failing: a provider dropping a model must
   // not hide every other preference, and the user needs the exact key to forget it.
   const issues: string[] = [];
-  for (const value of Object.keys(preferences))
+  // Claude Code workers run only on the local machine, so their models belong to its list alone.
+  const claude = selected.machine === "local";
+  for (const [value, preference] of Object.entries(preferences)) {
+    if (preference.agent === "claude") {
+      if (claude) rows.set(value, claudeRow(value, preference));
+      continue;
+    }
     if (!add(value))
       issues.push(
         `Saved preference ${value} is not in the OMP model catalog; forget or replace it`,
       );
+  }
   for (const [value, names] of rolesByModel)
     if (!add(value))
       issues.push(
         `OMP role ${names.toSorted().join(", ")} uses ${value}, which is not an exact catalog model`,
       );
-  if (view === "all") for (const selector of catalog.keys()) add(selector);
+  if (view === "all") {
+    for (const selector of catalog.keys()) add(selector);
+    if (claude)
+      for (const alias of CLAUDE_CODE_ALIASES)
+        if (!rows.has(alias)) rows.set(alias, claudeRow(alias, undefined));
+  }
 
   const provider = params.provider?.toLowerCase();
   const query = params.q?.trim().toLowerCase();
@@ -223,7 +261,7 @@ const modelsTool = (pi: OmpQueryAPI): ToolSpec => {
     label: "Models",
     approval: "write",
     description:
-      "List OMP chat models with the user's saved model preferences and the models current OMP roles run, and remember preferences. `list` view `preferred` (default) shows only models with a saved preference or role; `all` searches the full catalog. Each row's `model` is the exact value for orchestrator_task `model`. `prefer` saves a preferred model, optionally with the roles or kinds of work it is for, a rank (1 = first choice), and the user's reason; `avoid` marks a model never to pick on your own; `forget` deletes a saved entry. Saving replaces any earlier entry for the same model value. Optional machine or project selects the catalog and configuration context; neither means local. Preferences stay controller-local; forget needs no host.",
+      "List OMP chat models with the user's saved model preferences and the models current OMP roles run, and remember preferences. `list` view `preferred` (default) shows only models with a saved preference or role; `all` searches the full catalog. Each row's `model` is the exact value for orchestrator_task `model`; rows with agent `claude` are Claude Code models (local machine only) and launch with orchestrator_task agent `claude`. `prefer`/`avoid` with agent `claude` save a Claude Code alias or full name with optional :effort, without machine or project. `prefer` saves a preferred model, optionally with the roles or kinds of work it is for, a rank (1 = first choice), and the user's reason; `avoid` marks a model never to pick on your own; `forget` deletes a saved entry. Saving replaces any earlier entry for the same model value. Optional machine or project selects the catalog and configuration context; neither means local. Preferences stay controller-local; forget needs no host.",
     parameters: z.union([
       z
         .object({
@@ -241,6 +279,7 @@ const modelsTool = (pi: OmpQueryAPI): ToolSpec => {
           op: z.literal("prefer"),
           ...selector,
           model: z.string().min(1),
+          agent: z.enum(["omp", "claude"]).optional(),
           for: z
             .array(z.string().min(1))
             .optional()
@@ -255,6 +294,7 @@ const modelsTool = (pi: OmpQueryAPI): ToolSpec => {
           ...selector,
           op: z.literal("avoid"),
           model: z.string().min(1),
+          agent: z.enum(["omp", "claude"]).optional(),
           note: z.string().optional(),
         })
         .strict()
@@ -280,12 +320,32 @@ const modelsTool = (pi: OmpQueryAPI): ToolSpec => {
         if (params.op === "prefer" && params.rank !== undefined)
           if (!Number.isInteger(params.rank) || params.rank < 1)
             throw new Error("Preference rank must be a whole number of 1 or more");
-        // Validate against the live catalog so a typo can't be remembered and later block
-        // or misdirect a launch; the stored key is the exact value orchestrator_task accepts.
-        const selected = await selectOmpContext(pi, params, signal);
-        const snapshot = await selectedModels(pi, selected, signal);
-        const choice = resolveModel(snapshot.catalog, params.model);
-        const model = choice.thinking ? `${choice.model}:${choice.thinking}` : choice.model;
+        const claude = params.agent === "claude";
+        let model: string;
+        let host:
+          | { selected: Awaited<ReturnType<typeof selectOmpContext>>; context: unknown }
+          | undefined;
+        if (claude) {
+          if (params.machine !== undefined || params.project !== undefined)
+            throw new Error(
+              "Claude Code preferences take no machine or project; Claude Code workers run only on the local machine",
+            );
+          // Claude Code resolves aliases itself and publishes no catalog, so only the shape a
+          // launch accepts can be checked here.
+          if (!CLAUDE_MODEL.test(params.model))
+            throw new Error(
+              `Invalid Claude Code model: ${params.model}; use an alias or full name with optional :${CLAUDE_EFFORTS.join("|")}`,
+            );
+          model = params.model;
+        } else {
+          // Validate against the live catalog so a typo can't be remembered and later block
+          // or misdirect a launch; the stored key is the exact value orchestrator_task accepts.
+          const selected = await selectOmpContext(pi, params, signal);
+          const snapshot = await selectedModels(pi, selected, signal);
+          const choice = resolveModel(snapshot.catalog, params.model);
+          model = choice.thinking ? `${choice.model}:${choice.thinking}` : choice.model;
+          host = { selected, context: snapshot.context };
+        }
         const updated_at = new Date().toISOString();
         const note = params.note?.trim();
         const uses =
@@ -296,21 +356,31 @@ const modelsTool = (pi: OmpQueryAPI): ToolSpec => {
           params.op === "prefer"
             ? {
                 stance: "prefer",
+                ...(claude ? { agent: "claude" as const } : {}),
                 ...(uses.length ? { for: uses } : {}),
                 ...(params.rank !== undefined ? { rank: params.rank } : {}),
                 ...(note ? { note } : {}),
                 updated_at,
               }
-            : { stance: "avoid", ...(note ? { note } : {}), updated_at };
+            : {
+                stance: "avoid",
+                ...(claude ? { agent: "claude" as const } : {}),
+                ...(note ? { note } : {}),
+                updated_at,
+              };
         preferences[model] = preference;
         await writePreferences(root, preferences, signal);
         const details = {
           model,
           preference,
-          machine: selected.machine,
-          session: selected.session,
-          os: selected.os,
-          configuration_context: snapshot.context,
+          ...(host
+            ? {
+                machine: host.selected.machine,
+                session: host.selected.session,
+                os: host.selected.os,
+                configuration_context: host.context,
+              }
+            : { machine: "local" }),
           observed_at: new Date().toISOString(),
         };
         return text(`Saved model preference:\n${JSON.stringify(details, null, 2)}`, details);

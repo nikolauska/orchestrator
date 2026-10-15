@@ -26,6 +26,7 @@ src/runtime/machines.ts                           Herdr profile discovery, bindi
 src/runtime/report-transfer.ts                    Controller-local report collection, provenance, and durable receipts
 src/runtime/spaces.ts                             Herdr project and research space helpers
 src/runtime/{git,herdr,omp,treehouse,session}.ts    CLI and session-file wrappers
+src/runtime/claude.ts                             Claude Code usage through the pinned quota-axi, and model aliases
 .omp/worker-config.yml                             OMP settings overlay passed to every worker
 .omp/claude-worker-settings.json                   Approved Claude Code permission settings for Claude workers
 .omp/projects.json                                 Local project registry; ignored, never commit

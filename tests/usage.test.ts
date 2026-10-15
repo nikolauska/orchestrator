@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { usageSummary } from "../src/runtime/omp";
+import { claudeCodeUsage } from "../src/runtime/claude";
 import type { RuntimeDeps } from "../src/runtime/shared";
 import { cleanup, FakeExec, fixtureRoot, extensionRuntime } from "./test-helpers";
 import { zod } from "@oh-my-pi/pi-coding-agent";
@@ -239,6 +240,7 @@ test("usage selects one host's own accounts, role/profile context, and unmodifie
   const win = await run({ machine: "windows" });
   expect(win).not.toHaveProperty("isError", true);
   expect(win.details).toMatchObject({
+    claude_code: { unavailable: "Claude Code workers run only on the local machine" },
     machine: "windows",
     os: "win32",
     session: "agents",
@@ -310,6 +312,7 @@ test("local usage resolves the production host context without a running Herdr s
   const { root, project } = await fixtureRoot();
   const fake = new FakeExec(project);
   fake.modelRoles = { default: "local/model", slow: "@default" };
+  fake.claudeQuota = claudeQuota(Date.now());
   const execute = fake.exec;
   fake.exec = (command, args, options) =>
     command === "herdr"
@@ -325,5 +328,136 @@ test("local usage resolves the production host context without a running Herdr s
     configuration_context: { cwd: root, overlaySha256: expect.stringMatching(/^[a-f0-9]{64}$/) },
     roles: { default: "local/model", slow: "local/model" },
     providers: [],
+    claude_code: { plan: "pro", windows: [{ window: "five_hour" }, { window: "seven_day" }] },
+  });
+  expect(fake.calls).toContainEqual(
+    expect.objectContaining({
+      command: "bun",
+      args: [
+        expect.stringMatching(/node_modules[\\/]quota-axi[\\/]dist[\\/]bin[\\/]quota-axi\.js$/),
+        "--provider",
+        "claude",
+        "--json",
+        "--no-credential-refresh",
+      ],
+    }),
+  );
+});
+
+// Shape captured from quota-axi 0.1.55.
+function claudeQuota(now: number, provider: Record<string, unknown> = {}) {
+  return {
+    generatedAt: new Date(now).toISOString(),
+    schemaVersion: 5,
+    providers: [
+      {
+        provider: "claude",
+        plan: "pro",
+        windows: [
+          {
+            id: "five_hour",
+            label: "session",
+            kind: "session",
+            resetsAt: new Date(now + 4 * HOUR).toISOString(),
+            percentRemaining: 97,
+            pace: { status: "on_pace", reservePercentPoints: -0.6, burnMultiple: 1.25 },
+          },
+          {
+            id: "seven_day",
+            label: "week",
+            kind: "weekly",
+            resetsAt: new Date(now + 48 * HOUR).toISOString(),
+            percentRemaining: 71,
+            pace: { status: "behind", reservePercentPoints: 45.2, burnMultiple: 0.39 },
+          },
+        ],
+        state: { status: "fresh", stale: false },
+        quotaSemantics: {
+          status: "known",
+          effectiveAvailability: [
+            {
+              scope: "all_models",
+              status: "known",
+              effectivePercentRemaining: 71,
+              runway: {
+                status: "projected_exhaustion",
+                projectedExhaustedAt: new Date(now + 3 * HOUR).toISOString(),
+                limitingWindowId: "five_hour",
+              },
+            },
+          ],
+        },
+        accountKeys: ["default"],
+        ...provider,
+      },
+    ],
+  };
+}
+
+describe("Claude Code usage", () => {
+  const deps = (result: { code: number; stdout?: unknown; stderr?: string }) =>
+    ({
+      exec: async () => ({
+        code: result.code,
+        stdout: result.stdout === undefined ? "" : JSON.stringify(result.stdout),
+        stderr: result.stderr ?? "",
+      }),
+    }) as unknown as RuntimeDeps;
+
+  test("reports windows against their elapsed share, pace, and runway", async () => {
+    const usage = await claudeCodeUsage(deps({ code: 0, stdout: claudeQuota(NOW) }), NOW);
+    expect(usage).toEqual({
+      plan: "pro",
+      state: "fresh",
+      windows: [
+        {
+          window: "five_hour",
+          remaining_percent: 97,
+          window_elapsed_percent: 20,
+          resets_at: new Date(NOW + 4 * HOUR).toISOString(),
+          resets_in: "4h",
+          pace: "on_pace",
+        },
+        {
+          window: "seven_day",
+          remaining_percent: 71,
+          window_elapsed_percent: 71,
+          resets_at: new Date(NOW + 48 * HOUR).toISOString(),
+          resets_in: "2d",
+          pace: "behind",
+        },
+      ],
+      effective_remaining_percent: 71,
+      runway: {
+        status: "projected_exhaustion",
+        exhausted_at: new Date(NOW + 3 * HOUR).toISOString(),
+        limiting_window: "five_hour",
+      },
+    });
+  });
+
+  test("reports a missing quota-axi or Claude sign-in instead of failing usage", async () => {
+    expect(await claudeCodeUsage(deps({ code: 127, stderr: "quota-axi: not found" }), NOW)).toEqual(
+      {
+        error: expect.stringContaining("Claude Code usage could not run quota-axi"),
+      },
+    );
+    expect(
+      await claudeCodeUsage(
+        deps({ code: 0, stdout: claudeQuota(NOW, { notSetUp: true, windows: [] }) }),
+        NOW,
+      ),
+    ).toEqual({ error: "Claude Code is not signed in on this machine" });
+    expect(
+      await claudeCodeUsage(
+        deps({
+          code: 0,
+          stdout: claudeQuota(NOW, { windows: [], state: { status: "error", reason: "expired" } }),
+        }),
+        NOW,
+      ),
+    ).toEqual({
+      error: "quota-axi reported no Claude usage windows (state error: expired)",
+    });
   });
 });

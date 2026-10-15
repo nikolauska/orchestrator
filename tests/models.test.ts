@@ -130,7 +130,8 @@ describe("models", () => {
     await instance.runModels({ op: "prefer", model: "openai-codex/gpt-5.6", for: ["review"] });
 
     const all = (await instance.runModels({ op: "list", view: "all", limit: 2 })).details as Listed;
-    expect(all).toMatchObject({ total: 4, returned: 2 });
+    // Four OMP catalog models plus the four Claude Code aliases the local machine can run.
+    expect(all).toMatchObject({ total: 8, returned: 2 });
     expect(all.models[0]!.model).toBe("openai-codex/gpt-5.6");
 
     const anthropic = (await instance.runModels({ op: "list", view: "all", provider: "Anthropic" }))
@@ -377,6 +378,10 @@ describe("host-qualified models", () => {
       rank: 1,
       for: ["review"],
     });
+    // Claude Code workers run only locally, so a Claude preference never lists on a remote host.
+    expect(
+      (await fixture.run({ op: "prefer", agent: "claude", model: "opus:high" })).isError,
+    ).toBeUndefined();
     const remote = await fixture.run({ op: "list", machine: "remote" });
     expect(remote.details).toMatchObject({
       models: [
@@ -389,6 +394,7 @@ describe("host-qualified models", () => {
       machine: "local",
       issues: [expect.stringContaining("remote/only:high")],
     });
+    expect((await fixture.run({ op: "forget", model: "opus:high" })).isError).toBeUndefined();
     expect(
       JSON.parse(await readFile(join(fixture.root, ".omp", "model-preferences.json"), "utf8")),
     ).toEqual(persisted);
@@ -536,4 +542,76 @@ test("effective local choice preserves colon ids, refuses role cycles, and verif
   await expect(
     effectiveWorkerChoice(pi, { ...selected.configuration_context, overlaySha256: "0".repeat(64) }),
   ).rejects.toThrow();
+});
+
+describe("Claude Code models", () => {
+  test("saves Claude Code preferences without an OMP catalog and lists them locally", async () => {
+    const { root, fake, instance } = await setup();
+    const saved = await instance.runModels({
+      op: "prefer",
+      agent: "claude",
+      model: "opus:xhigh",
+      for: ["review"],
+      rank: 1,
+      note: "deep reviews",
+    });
+    expect(saved).not.toHaveProperty("isError", true);
+    expect(saved.details).toMatchObject({ model: "opus:xhigh", machine: "local" });
+    // No catalog exists for Claude Code; saving must not depend on OMP being reachable.
+    expect(fake.calls.some((call) => call.command === "omp")).toBe(false);
+    expect(
+      (await instance.runModels({ op: "avoid", agent: "claude", model: "haiku" })).isError,
+    ).toBeUndefined();
+    const persisted = JSON.parse(
+      await readFile(join(root, ".omp", "model-preferences.json"), "utf8"),
+    );
+    expect(persisted["opus:xhigh"]).toMatchObject({
+      stance: "prefer",
+      agent: "claude",
+      for: ["review"],
+      rank: 1,
+      note: "deep reviews",
+    });
+    expect(persisted.haiku).toMatchObject({ stance: "avoid", agent: "claude" });
+
+    const listed = (await instance.runModels({ op: "list" })).details as Listed;
+    expect(listed.issues).toBeUndefined();
+    expect(listed.models.map((item) => item.model)).toEqual([
+      "opus:xhigh",
+      "anthropic/claude-opus-5-5",
+      "haiku",
+    ]);
+    expect(listed.models[0]).toEqual({
+      model: "opus:xhigh",
+      agent: "claude",
+      provider: "claude-code",
+      thinking_levels: ["low", "medium", "high", "xhigh", "max"],
+      preference: persisted["opus:xhigh"],
+    });
+
+    const all = (await instance.runModels({ op: "list", view: "all", provider: "claude-code" }))
+      .details as Listed;
+    expect(all.models.map((item) => item.model)).toEqual([
+      "opus:xhigh",
+      "fable",
+      "opus",
+      "sonnet",
+      "haiku",
+    ]);
+
+    expect(
+      (await instance.runModels({ op: "forget", model: "opus:xhigh" })).isError,
+    ).toBeUndefined();
+  });
+
+  test("refuses malformed Claude Code models and host selectors without writing", async () => {
+    const { root, instance } = await setup();
+    for (const params of [
+      { op: "prefer" as const, agent: "claude" as const, model: "opus:turbo" },
+      { op: "prefer" as const, agent: "claude" as const, model: "anthropic/claude-opus-5-5" },
+      { op: "avoid" as const, agent: "claude" as const, model: "opus", machine: "local" },
+    ])
+      expect((await instance.runModels(params)).isError).toBe(true);
+    await expect(readFile(join(root, ".omp", "model-preferences.json"), "utf8")).rejects.toThrow();
+  });
 });

@@ -1,6 +1,6 @@
 # Usage tool
 
-The Usage tool reports how much provider usage is left for the accounts OMP workers spend from. It only reports; it never picks a model.
+The Usage tool reports how much provider usage is left for the accounts OMP workers and Claude Code workers spend from. It only reports; it never picks a model.
 
 ## Arguments
 
@@ -21,3 +21,11 @@ Accounts and roles belong to the selected host and configuration context. The to
 For each provider, every signed-in account appears with its usage windows, such as 5 hours or 7 days. Each window shows the percent remaining, how much of the window has already passed, and when it resets. Comparing the percent used with the share of the window that has passed shows whether an account is spending faster than its window allows. Account names are shortened so they don't appear in full.
 
 Each provider also shows how many accounts' worth of each window is left across that host's accounts, and which OMP model roles in the selected profile and configuration context currently resolve to that provider. Accounts that have no usage data, such as API keys, are listed separately.
+
+## Claude Code
+
+Claude Code workers spend from Claude Code's own sign-in, which is separate from OMP's accounts. Local results add a `claude_code` section for it: the plan, each window (such as `five_hour` and `seven_day`) with the percent remaining, how much of the window has passed, when it resets, and whether spending is ahead of or behind pace, plus the overall percent remaining and, when spending would run out before a reset, when that is projected to happen.
+
+The numbers come from the repository's pinned `quota-axi`, which reads Claude Code's sign-in without the orchestrator handling the token. It never refreshes an expired sign-in, so the query does not change Claude Code's credentials. When the numbers can't be read, for example because Claude Code is not signed in, `claude_code` holds an `error` and the rest of the result is still returned.
+
+Claude Code workers run only on the local machine, so remote results show `claude_code` as unavailable instead of reporting the controller's Claude account.

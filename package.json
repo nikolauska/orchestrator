@@ -12,7 +12,8 @@
     "claude": "claude --mcp-config mcp/claude-code.json --dangerously-load-development-channels server:orchestrator"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.30.1"
+    "@modelcontextprotocol/sdk": "1.30.1",
+    "quota-axi": "0.1.55"
   },
   "devDependencies": {
     "@oh-my-pi/omptype": "18.4.4",

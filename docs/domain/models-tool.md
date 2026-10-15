@@ -7,8 +7,8 @@ The Models tool shows which chat models workers can run and remembers the user's
 | `op`     | Arguments besides `op`                                                                                                  |
 | -------- | ----------------------------------------------------------------------------------------------------------------------- |
 | `list`   | Optional `machine` or `project`, `view` (`preferred` or `all`), `provider`, `q`, `limit` (positive integer; default 50) |
-| `prefer` | `model`, optional `machine` or `project`, `for` (roles/kinds of work), positive integer `rank`, `note`                  |
-| `avoid`  | `model`, optional `machine` or `project`, `note`                                                                        |
+| `prefer` | `model`, optional `agent`, `machine` or `project`, `for` (roles/kinds of work), positive integer `rank`, `note`         |
+| `avoid`  | `model`, optional `agent`, `machine` or `project`, `note`                                                               |
 | `forget` | `model` only                                                                                                            |
 
 `rank: 1` is first choice. `view` defaults to `preferred`; results include total matches and the number returned. Copy a row's exact `model` into `orchestrator_task` rather than constructing a model name.
@@ -48,3 +48,9 @@ Preferences stay in one controller-local map, in the existing `.omp/model-prefer
 When a saved model is absent from the selected host's catalog, or an OMP role points at a model the catalog does not have, the list reports it as an issue rather than failing or deleting the preference. A preference valid on another host stays saved.
 
 `forget` accepts only the exact `model` value. It does not query a machine, catalog, or registry, so it works offline even after a remote profile is removed.
+
+## Claude Code models
+
+Claude Code workers take a Claude Code model instead of an OMP one: an alias such as `opus` or a full model name, optionally with an effort level such as `opus:high`. Saving one with `agent: "claude"` remembers it in the same preferences map, marked as a Claude Code model. It takes no `machine` or `project`, because Claude Code workers run only on the local machine. Claude Code publishes no model catalog, so saving checks only that the value has the form a launch accepts; a misspelled full name is caught when a worker starts.
+
+Local lists show Claude Code preferences as rows with `agent: "claude"` and provider `claude-code`. The `all` view also lists the aliases `fable`, `opus`, `sonnet` and `haiku`. Lists for a remote machine leave Claude Code rows out. Launch a Claude Code row with `orchestrator_task` `agent: "claude"` and the row's exact `model`.

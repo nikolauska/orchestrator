@@ -549,7 +549,7 @@ function round(value: number, digits: number): number {
   return Math.round(value * scale) / scale;
 }
 
-function duration(ms: number): string {
+export function duration(ms: number): string {
   if (ms <= 0) return "now";
   const minutes = Math.ceil(ms / 60_000);
   const days = Math.floor(minutes / 1440);

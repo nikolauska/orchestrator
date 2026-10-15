@@ -34,6 +34,7 @@ import {
   promptAgent,
   startAgent,
   CLAUDE_EFFORTS,
+  CLAUDE_MODEL,
   type AgentChoice,
   waitForShell,
 } from "../runtime/herdr";
@@ -121,10 +122,6 @@ export async function runTask(
     return text(errorMessage(error), undefined, true);
   }
 }
-
-const CLAUDE_MODEL = new RegExp(
-  `^[A-Za-z0-9][A-Za-z0-9._\\[\\]-]*(?::(?:${CLAUDE_EFFORTS.join("|")}))?$`,
-);
 
 /** Claude Code resolves aliases itself; omitting the model keeps the host's default. */
 function claudeChoice(model: string | undefined): AgentChoice {

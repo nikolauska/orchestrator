@@ -121,6 +121,8 @@ The server is deliberately not in a project `.mcp.json`: OMP also loads that fil
 
 Each worker uses a role or an exact model from its selected host's OMP catalog, optionally with a thinking level. Model preferences live in one controller-local `.omp/model-preferences.json` map, not a map per host. `models` and `usage` accept either `project` or `machine`; neither means local, not the independent default. Query the project before project launches, or the chosen machine before independent launches. Accounts and roles belong to that host/profile/worker configuration; quota is never added across machines. An unavailable host or model is not a reason to fall back to the controller. A model named for one task wins over remembered preferences; a quota-driven swap must stay equally strong and be explained.
 
+Claude Code workers have their own entries: `models` lists Claude Code preferences with `agent: "claude"`, and local `usage` adds a `claude_code` section read through the pinned `quota-axi` dependency, run with Bun.
+
 Catalog and usage queries use the local runtime or remote helper without Herdr launch preflight. They work while the terminal server is unavailable, provided the selected host's OMP, approved settings and helper channel are available. Worker launches still require Herdr.
 
 ## Development

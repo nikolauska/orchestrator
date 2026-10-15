@@ -144,6 +144,8 @@ export class FakeExec {
     },
   ];
   usage: unknown = { reports: [], capacity: {} };
+  /** quota-axi JSON for Claude Code usage; undefined fails as if quota-axi could not run. */
+  claudeQuota: unknown = undefined;
   modelRoles: Record<string, string> = {};
   readonly remoteHeads = new Map<string, string>();
   readonly knownCommits = new Set<string>();
@@ -258,6 +260,8 @@ export class FakeExec {
     if (command === "omp" && args[0] === "usage") return this.#ok(JSON.stringify(this.usage));
     if (command === "omp" && args[0] === "config")
       return this.#ok(JSON.stringify({ key: args[2], value: this.modelRoles }));
+    if (command === "bun" && args[0]?.endsWith("quota-axi.js") && this.claudeQuota !== undefined)
+      return this.#ok(JSON.stringify(this.claudeQuota));
     if (command === "git") return this.#git(args, options.cwd);
     return this.#fail(`unexpected command: ${command} ${args.join(" ")}`);
   };
