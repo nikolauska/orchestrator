@@ -1,6 +1,7 @@
 import type { ToolOutcome } from "../core/tool";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
+import { existsSync, statSync } from "node:fs";
+import { dirname, isAbsolute, join } from "node:path";
 import { mkdir } from "node:fs/promises";
 import {
   NAME,
@@ -38,6 +39,7 @@ import {
   type AgentChoice,
   waitForShell,
 } from "../runtime/herdr";
+import { CODEX_EFFORTS, CODEX_MODEL } from "../runtime/codex";
 import { projectSpace, researchSpace, serializeSpaces, workerLabel } from "../runtime/spaces";
 import {
   adoptWorker,
@@ -84,6 +86,14 @@ export async function runTask(
   try {
     // The agent loop validates Zod params, but custom-tool adapters forward them unchanged;
     // retain this guard for direct callers and semantic invariants not covered by the schema.
+    // OMP's strict transport also sends an omitted codexHome as "", in either scope.
+    params = {
+      ...params,
+      tasks: params.tasks.map(({ codexHome, ...item }) => ({
+        ...item,
+        ...(codexHome ? { codexHome } : {}),
+      })),
+    } as TaskParams;
     validateTask(params);
     if (!("scope" in params)) {
       // OMP's strict tool schema transport materializes omitted optional fields as "" or false; keep omission as default behavior.
@@ -91,7 +101,7 @@ export async function runTask(
         ...params,
         tasks: params.tasks.map(({ agent, pushTo, role, model, startFrom, hold, ...item }) => ({
           ...item,
-          ...(agent === "claude" ? { agent } : {}),
+          ...(agent === "claude" || agent === "codex" ? { agent } : {}),
           ...(pushTo ? { pushTo } : {}),
           ...(role ? { role } : {}),
           ...(model ? { model } : {}),
@@ -123,8 +133,8 @@ export async function runTask(
   }
 }
 
-/** Claude Code resolves aliases itself; omitting the model keeps the host's default. */
-function claudeChoice(model: string | undefined): AgentChoice {
+/** Claude Code and Codex resolve model names themselves; omitting one keeps the host's default. */
+function cliChoice(model: string | undefined): AgentChoice {
   if (!model) return {};
   const split = model.lastIndexOf(":");
   return split > 0 ? { model: model.slice(0, split), thinking: model.slice(split + 1) } : { model };
@@ -159,18 +169,42 @@ function validateTask(params: TaskParams): void {
       throw new Error(`Invalid task kind for ${item.name}: ${item.kind}`);
     if (typeof item.task !== "string" || !item.task.trim())
       throw new Error(`Task for ${item.name} must be non-empty`);
-    if (item.agent !== undefined && item.agent !== "omp" && item.agent !== "claude")
+    if (
+      item.agent !== undefined &&
+      item.agent !== "omp" &&
+      item.agent !== "claude" &&
+      item.agent !== "codex"
+    )
       throw new Error(`Invalid agent for ${item.name}: ${item.agent}`);
     if (item.agent === "claude" && item.role)
       throw new Error(`Claude Code worker ${item.name} takes a model, not an OMP role`);
+    if (item.agent === "codex" && item.role)
+      throw new Error(`Codex worker ${item.name} takes a model, not an OMP role`);
+    if (item.agent === "codex" && item.model && !CODEX_MODEL.test(item.model))
+      throw new Error(
+        `Invalid Codex model for ${item.name}: ${item.model}; use a Codex model name with optional :${CODEX_EFFORTS.join("|")}`,
+      );
+    if (item.codexHome !== undefined) {
+      if (item.agent !== "codex") throw new Error(`codexHome needs a Codex worker: ${item.name}`);
+      // Codex workers run only on the controller, so its own filesystem is the worker's.
+      if (
+        typeof item.codexHome !== "string" ||
+        !isAbsolute(item.codexHome) ||
+        !existsSync(item.codexHome) ||
+        !statSync(item.codexHome).isDirectory()
+      )
+        throw new Error(
+          `codexHome for ${item.name} must be an existing absolute directory: ${item.codexHome}`,
+        );
+    }
     if (item.agent === "claude" && item.model && !CLAUDE_MODEL.test(item.model))
       throw new Error(
         `Invalid Claude Code model for ${item.name}: ${item.model}; use an alias or full name with optional :${CLAUDE_EFFORTS.join("|")}`,
       );
     if (item.remoteControl !== undefined && typeof item.remoteControl !== "boolean")
       throw new Error(`Invalid remoteControl for ${item.name}`);
-    if (item.remoteControl && item.agent !== "claude")
-      throw new Error(`Remote Control needs a Claude Code worker: ${item.name}`);
+    if (item.remoteControl && item.agent !== "claude" && item.agent !== "codex")
+      throw new Error(`Remote control needs a Claude Code or Codex worker: ${item.name}`);
     if (item.role !== undefined && (typeof item.role !== "string" || !NAME.test(item.role)))
       throw new Error(`Invalid OMP model role for ${item.name}: ${item.role}`);
     if (item.model !== undefined && (typeof item.model !== "string" || !/^\S+$/.test(item.model)))
@@ -231,7 +265,7 @@ export async function preflightTask(
   const options = { controllerId: state.store.controllerId, binding, signal };
   const agents = [...new Set(params.tasks.map((item) => item.agent ?? "omp"))];
   // OMP-only batches keep the original preflight arguments that older helpers accept.
-  const agentArgs = agents.includes("claude") ? { agents } : {};
+  const agentArgs = agents.some((agent) => agent !== "omp") ? { agents } : {};
   const checked = await checkMachine(state.api, selector, {
     ...options,
     preflight: entry
@@ -266,11 +300,10 @@ export async function preflightTask(
     : undefined;
   const choices: Record<string, AgentChoice> = {};
   for (const item of params.tasks)
-    choices[item.name] = models
-      ? item.agent === "claude"
-        ? claudeChoice(item.model)
-        : await effectiveWorkerChoice(models, context, item, signal)
-      : claudeChoice(item.model);
+    choices[item.name] =
+      models && (item.agent ?? "omp") === "omp"
+        ? await effectiveWorkerChoice(models, context, item, signal)
+        : cliChoice(item.model);
   const forbiddenRoots: HostPath[] = [];
   for (const [name, registered] of Object.entries(registry.projects)) {
     if (
@@ -531,6 +564,7 @@ async function launchWorker(
     record.model = choice.model;
     record.thinking = choice.thinking;
     if (record.remote_control) choice = { ...choice, remoteControl: record.name };
+    if (record.codex_home) choice = { ...choice, codexHome: record.codex_home };
     record.prompt = workerPrompt(preflight, context, item, directory, record.report_source_path);
     persist(state, record);
     if (record.report_path) await mkdir(dirname(record.report_path), { recursive: true });
@@ -623,6 +657,7 @@ async function launchWorker(
       },
       1,
       kind,
+      record.codex_home,
     );
     persist(state, record);
     await hostMutation("worker.bind-agent", { launchId, binding: record.agent_binding });
@@ -650,6 +685,7 @@ async function launchWorker(
       },
       1,
       kind,
+      record.codex_home,
     );
     // An idle startup is not completion evidence; supervision reconciles without replaying.
     if (observed.status === "working" || observed.status === "blocked") {
@@ -700,8 +736,9 @@ export function workerRecord(
     scope: preflight.scope,
     kind: item.kind,
     name: item.name,
-    ...(item.agent === "claude" ? { agent_kind: "claude" as const } : {}),
+    ...(item.agent === "claude" || item.agent === "codex" ? { agent_kind: item.agent } : {}),
     ...(item.remoteControl ? { remote_control: true } : {}),
+    ...(item.codexHome ? { codex_home: item.codexHome } : {}),
     role: item.role,
     controller_id: state.store.controllerId,
     launch_id: launchId,
@@ -768,7 +805,7 @@ const taskTool: ToolFactory = (pi) => {
     label: "Orchestrator task",
     approval: "exec",
     description:
-      "Launch visible workers for one scope and machine per call. agent picks OMP (default) or claude (Claude Code, local machine only; model is an optional Claude Code alias or full name with optional :effort low|medium|high|xhigh|max; no role; remoteControl starts it as a Claude Code Remote Control session named after the worker so the user can follow it from claude.ai or the Claude app). Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
+      "Launch visible workers for one scope and machine per call. agent picks OMP (default), claude (Claude Code, local machine only; model is an optional Claude Code alias or full name with optional :effort low|medium|high|xhigh|max; no role; remoteControl starts it as a Claude Code Remote Control session named after the worker so the user can follow it from claude.ai or the Claude app) or codex (Codex CLI, local Linux/macOS machine only, unsandboxed with no approvals; model is an optional Codex model name with optional :effort low|medium|high|xhigh|max|ultra; no role; remoteControl attaches it to the user's running remote-control Codex app server so they can follow it from the Codex app; codexHome is an absolute CODEX_HOME such as a separate work account). Project workers use the registration's machine with no override; independent scouts use the saved default or optional machine. Role selects from that host's OMP catalog; model selects an exact provider/id with optional :level thinking (not both). startFrom names a committed branch on the project's host. Default delivery stays in that host's registered checkout; pushTo is explicit publication instead. hold stops for review. origin_warning discloses a source behind its upstream. Partial starts retain phase and operation evidence without replaying prompts. Supervision and settlement use each worker's original machine; completions wake this session after delivery or verified local report collection.",
     parameters: z.union([
       z
         .object({
@@ -782,8 +819,9 @@ const taskTool: ToolFactory = (pi) => {
                     kind: z.literal("implementation"),
                     name: z.string(),
                     task: z.string(),
-                    agent: z.enum(["omp", "claude"]).optional(),
+                    agent: z.enum(["omp", "claude", "codex"]).optional(),
                     remoteControl: z.boolean().optional(),
+                    codexHome: z.string().optional(),
                     role: z.string().optional(),
                     model: z.string().optional(),
                     pushTo: z.string().optional(),
@@ -796,8 +834,9 @@ const taskTool: ToolFactory = (pi) => {
                     kind: z.literal("scout"),
                     name: z.string(),
                     task: z.string(),
-                    agent: z.enum(["omp", "claude"]).optional(),
+                    agent: z.enum(["omp", "claude", "codex"]).optional(),
                     remoteControl: z.boolean().optional(),
+                    codexHome: z.string().optional(),
                     role: z.string().optional(),
                     model: z.string().optional(),
                     startFrom: z.string().optional(),
@@ -821,8 +860,9 @@ const taskTool: ToolFactory = (pi) => {
                   kind: z.literal("scout"),
                   name: z.string(),
                   task: z.string(),
-                  agent: z.enum(["omp", "claude"]).optional(),
+                  agent: z.enum(["omp", "claude", "codex"]).optional(),
                   remoteControl: z.boolean().optional(),
+                  codexHome: z.string().optional(),
                   role: z.string().optional(),
                   model: z.string().optional(),
                 })

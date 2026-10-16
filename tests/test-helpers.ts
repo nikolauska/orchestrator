@@ -31,6 +31,10 @@ import usageTool from "../src/tools/usage";
 import type { HostModelsParams } from "../src/tools/models";
 import { targetKey, type ExecutionTarget } from "../src/runtime/execution";
 
+// Codex's default home holds the user's real model cache and sessions; tests must never read
+// them, so the default resolves to a folder that does not exist.
+process.env.CODEX_HOME = join(tmpdir(), `orchestrator-tests-no-codex-home-${process.pid}`);
+
 export function executionTargetFixture(
   os: ExecutionTarget["os"] = "linux",
   machineId = "local",
@@ -162,6 +166,8 @@ export class FakeExec {
   spaceCloseFails = false;
   agentIdentity = "omp";
   claudeSessionIds = new Map<string, string>();
+  /** Simulates Codex stopping at its folder trust prompt on the next agent start. */
+  codexTrustPromptOnce = false;
   integrationStatus = "omp: current (v10) (host overlay)";
   readonly goneAgents = new Set<string>();
   readonly workspaces: FakeWorkspace[] = [];
@@ -197,8 +203,17 @@ export class FakeExec {
     }
     if (command === "herdr" && args.includes("pane") && args.includes("wait-output"))
       return this.shellWaitFails ? this.#fail("shell unavailable") : this.#ok("{}");
-    if (command === "herdr" && args.includes("agent") && args.includes("start"))
+    if (command === "herdr" && args.includes("agent") && args.includes("start")) {
+      if (this.codexTrustPromptOnce) {
+        this.codexTrustPromptOnce = false;
+        const pane = args[args.indexOf("--pane") + 1];
+        this.status.set(pane, "blocked");
+        this.screens.set(pane, "Folder access\nTrust this folder?\n› 1. Trust and continue");
+        return this.#fail('{"error":{"code":"agent_not_ready","message":"agent is blocked"}}');
+      }
       return this.#ok("{}");
+    }
+    if (command === "herdr" && args.includes("pane") && args.includes("run")) return this.#ok("{}");
     if (command === "herdr" && args.includes("agent") && args.includes("send-keys")) {
       const pane = args[args.indexOf("send-keys") + 1];
       this.status.set(pane, args.at(-1) === "esc" ? "idle" : "working");
@@ -233,13 +248,15 @@ export class FakeExec {
             agent: {
               agent: this.agentIdentity,
               agent_status: this.status.get(pane) ?? "working",
-              agent_session: this.sessionless.has(pane)
-                ? null
-                : {
-                    agent: this.agentIdentity,
-                    ...(await this.#session(pane)),
-                    source: `herdr:${this.agentIdentity}`,
-                  },
+              // Codex runs its hooks outside the pane, so Herdr never reports a Codex session.
+              agent_session:
+                this.sessionless.has(pane) || this.agentIdentity === "codex"
+                  ? null
+                  : {
+                      agent: this.agentIdentity,
+                      ...(await this.#session(pane)),
+                      source: `herdr:${this.agentIdentity}`,
+                    },
             },
           },
         }),
@@ -509,6 +526,7 @@ export function fixtureHost(
       local: true,
       sessionRoots: [join(root, "sessions")],
       claudeSessionRoots: [join(root, "sessions")],
+      codexSessionRoots: [join(root, "codex-sessions")],
       discoverExecutable: (name) => join(tools, name),
     },
   );

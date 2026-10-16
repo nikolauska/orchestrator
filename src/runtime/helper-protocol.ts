@@ -68,7 +68,7 @@ export type HostError = z.infer<typeof hostErrorSchema>;
 export const agentBindingSchema = z
   .object({
     revision: count.refine((v) => v > 0),
-    identity: z.enum(["omp", "claude"]),
+    identity: z.enum(["omp", "claude", "codex"]),
     agentName: str,
     session: str,
     workspaceId: str,
@@ -76,6 +76,8 @@ export const agentBindingSchema = z
     paneId: str,
     cwd: hostPathSchema,
     sessionPath: str.optional(),
+    /** Codex workers only: the CODEX_HOME whose sessions folder holds the worker's session. */
+    codexHome: str.optional(),
     incarnation: str.optional(),
     completionSeq: count.optional(),
   })
@@ -336,7 +338,7 @@ export const hostArgsSchemas = {
         requiredTools: strings.optional(),
         /** Worker agents the batch launches; omitted means OMP only. */
         agents: z
-          .array(z.enum(["omp", "claude"]))
+          .array(z.enum(["omp", "claude", "codex"]))
           .min(1)
           .optional(),
       })
@@ -349,7 +351,7 @@ export const hostArgsSchemas = {
         requiredTools: strings.optional(),
         /** Worker agents the batch launches; omitted means OMP only. */
         agents: z
-          .array(z.enum(["omp", "claude"]))
+          .array(z.enum(["omp", "claude", "codex"]))
           .min(1)
           .optional(),
       })

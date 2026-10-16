@@ -13,8 +13,9 @@ import {
   rmdir,
   stat,
 } from "node:fs/promises";
-import { constants, existsSync, type BigIntStats } from "node:fs";
+import { constants, createReadStream, existsSync, type BigIntStats } from "node:fs";
 import { homedir } from "node:os";
+import { createInterface } from "node:readline";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -59,9 +60,12 @@ import * as git from "./git";
 import * as treehouse from "./treehouse";
 import * as omp from "./omp";
 import { lastResponse } from "./session";
+import { codexHome } from "./codex";
 import {
   execCommand,
   parseJson,
+  stringAt,
+  valueAt,
   type ExecResult,
   type RuntimeDeps,
   type WorkerRecord,
@@ -77,6 +81,8 @@ export type HostRuntime = {
   sessionRoots?: string[];
   /** Overrides the Claude Code transcript root for Claude worker sessions. */
   claudeSessionRoots?: string[];
+  /** Overrides every Codex home's sessions folder for Codex worker sessions. */
+  codexSessionRoots?: string[];
   discoverExecutable?: (name: string) => string | null;
 };
 const workerSchema = z
@@ -439,6 +445,22 @@ async function claudeCheck(
       remedy: "Repair the Claude Code installation manually.",
     });
   return { name: "claude", available: true, version: result.stdout.trim(), capabilities: [] };
+}
+
+async function codexCheck(runtime: HostRuntime): Promise<HostResult<"preflight">["tools"][number]> {
+  const executable = (runtime.discoverExecutable ?? Bun.which)("codex");
+  if (!executable || /\.(?:cmd|bat|ps1)$/i.test(executable))
+    throw new HostFailure(
+      "PREREQUISITE_MISSING",
+      "Codex is unavailable as a native executable on this host.",
+      { remedy: "Manually install the Codex CLI and sign it in for this user." },
+    );
+  const result = await runtime.deps.exec(executable, ["--version"], { timeout: 30_000 });
+  if (result.code || result.killed)
+    throw new HostFailure("PREREQUISITE_MISSING", "Codex --version failed on this host.", {
+      remedy: "Repair the Codex CLI installation manually.",
+    });
+  return { name: "codex", available: true, version: result.stdout.trim(), capabilities: [] };
 }
 
 async function settings(
@@ -1523,6 +1545,7 @@ async function execute(
         await omp.modelRoles(hostDeps(runtime, context), context.cwd);
       }
       if (agents.has("claude")) tools.push(await claudeCheck(runtime));
+      if (agents.has("codex")) tools.push(await codexCheck(runtime));
       return {
         host: hello(runtime),
         context,
@@ -1633,7 +1656,20 @@ async function execute(
           "AGENT_MISMATCH",
           "Relaunch cannot move the worker to another Herdr session.",
         );
-      if (binding.sessionPath) {
+      if (binding.identity === "codex") {
+        // A Codex session reference is the worker's own directory; the session file is found
+        // when it is read, because a relaunch starts a newer one in the same directory.
+        if (binding.sessionPath && binding.sessionPath !== binding.cwd.path)
+          throw new HostFailure(
+            "AGENT_MISMATCH",
+            "Codex session reference must be the worker's own directory.",
+          );
+        if (binding.codexHome !== undefined && !isAbsolute(binding.codexHome))
+          throw new HostFailure("INVALID_REQUEST", "Codex home must be an absolute path.");
+        delete worker.sessionIdentity;
+      } else if (binding.codexHome !== undefined)
+        throw new HostFailure("INVALID_REQUEST", "Only Codex workers have a Codex home.");
+      else if (binding.sessionPath) {
         const sessionPath = await validateSession(runtime, binding.sessionPath, binding.identity);
         // A Claude binding keeps Herdr's session ID so later agent observations still match it.
         if (binding.identity !== "claude") binding.sessionPath = sessionPath.path;
@@ -1691,8 +1727,14 @@ async function execute(
       let requested: HostPath, bound: HostPath;
       try {
         const kind = worker.binding.identity;
-        requested = await validateSession(runtime, request.args.sessionPath, kind);
-        bound = await validateSession(runtime, worker.binding.sessionPath, kind);
+        const home = worker.binding.codexHome;
+        if (kind === "codex" && request.args.sessionPath !== worker.binding.sessionPath)
+          throw new HostFailure(
+            "AGENT_MISMATCH",
+            "Session reference differs from the verified worker binding.",
+          );
+        requested = await validateSession(runtime, request.args.sessionPath, kind, home);
+        bound = await validateSession(runtime, worker.binding.sessionPath, kind, home);
       } catch (error) {
         if (error instanceof Error && "code" in error && error.code === "ENOENT")
           return { unavailableReason: "Bound agent session file is unavailable." };
@@ -1869,13 +1911,82 @@ async function claudeTranscript(roots: string[], id: string): Promise<string> {
   });
 }
 
+/** Workers must not delegate, but a subagent session in the same directory is never the answer. */
+function codexSubagent(meta: unknown): boolean {
+  const source = valueAt(meta, ["source"]);
+  return (
+    stringAt(meta, ["thread_source"]) === "subagent" ||
+    (!!source && typeof source === "object" && "subagent" in source)
+  );
+}
+
+async function firstLine(path: string): Promise<string | undefined> {
+  const stream = createReadStream(path, { encoding: "utf8" });
+  const lines = createInterface({ input: stream, crlfDelay: Infinity });
+  try {
+    for await (const line of lines) return line;
+    return undefined;
+  } finally {
+    lines.close();
+    stream.destroy();
+  }
+}
+
+/**
+ * Find the newest Codex session started in a worker's directory. Codex files sessions under
+ * YYYY/MM/DD folders with a timestamped name and records the working directory in the first
+ * line, so a newest-first walk stops at the current session without reading older ones.
+ */
+async function codexSession(roots: string[], directory: string): Promise<string> {
+  const entries = async (path: string) => {
+    try {
+      return (await readdir(path, { withFileTypes: true })).toSorted((a, b) =>
+        b.name.localeCompare(a.name),
+      );
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+      throw error;
+    }
+  };
+  for (const root of roots)
+    for (const year of await entries(root))
+      for (const month of year.isDirectory() ? await entries(join(root, year.name)) : [])
+        for (const day of month.isDirectory()
+          ? await entries(join(root, year.name, month.name))
+          : []) {
+          if (!day.isDirectory()) continue;
+          const folder = join(root, year.name, month.name, day.name);
+          for (const file of await entries(folder)) {
+            if (!file.isFile() || !file.name.endsWith(".jsonl")) continue;
+            const path = join(folder, file.name);
+            let meta: unknown;
+            try {
+              const entry = JSON.parse((await firstLine(path)) ?? "");
+              if (stringAt(entry, ["type"]) !== "session_meta") continue;
+              meta = valueAt(entry, ["payload"]);
+            } catch {
+              // A session Codex is still creating, or one that is not a Codex session.
+              continue;
+            }
+            if (stringAt(meta, ["cwd"]) === directory && !codexSubagent(meta)) return path;
+          }
+        }
+  // The worker may not have started its session yet; callers treat this as unavailable.
+  throw Object.assign(new Error(`No Codex session exists yet for ${directory}`), {
+    code: "ENOENT",
+  });
+}
+
 async function validateSession(
   runtime: HostRuntime,
   value: string,
   kind: AgentBinding["identity"] = "omp",
+  home?: string,
 ): Promise<HostPath> {
   let roots: string[];
   if (kind === "claude") roots = runtime.claudeSessionRoots ?? [claudeSessionsDir()];
+  else if (kind === "codex")
+    roots = runtime.codexSessionRoots ?? [join(codexHome(home), "sessions")];
   else {
     const context = await contextFor(runtime);
     const configDir = await execCommand(hostDeps(runtime, context), "omp", ["config", "path"], {
@@ -1884,7 +1995,11 @@ async function validateSession(
     roots = runtime.sessionRoots ?? [sessionsDir(configDir)];
   }
   const path = await canonicalPath(
-    kind === "claude" ? await claudeTranscript(roots, value) : value,
+    kind === "claude"
+      ? await claudeTranscript(roots, value)
+      : kind === "codex"
+        ? await codexSession(roots, value)
+        : value,
   );
   for (const root of roots) {
     try {

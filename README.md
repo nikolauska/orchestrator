@@ -11,7 +11,7 @@ Read [How Orchestrator works](docs/domain/overview.md) for the full picture.
 
 ## Requirements
 
-Herdr 0.9.3+ plus either OMP or Claude Code, with Herdr's integration for whichever you use. Project work also needs Git and Treehouse. Remote machines need OMP and the manually provisioned helper. See [Requirements and platform support](docs/domain/platform-support.md) for exact versions and which platforms have actually been tested.
+Herdr 0.9.3+ plus either OMP or Claude Code, with Herdr's integration for whichever you use. Codex workers also need the Codex CLI. Project work also needs Git and Treehouse. Remote machines need OMP and the manually provisioned helper. See [Requirements and platform support](docs/domain/platform-support.md) for exact versions and which platforms have actually been tested.
 
 ## Quick start
 

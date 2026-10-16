@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
 import {
@@ -196,6 +197,27 @@ function attachHerdr(fake: FakeExec, root: string): void {
         tab_id: pane?.tabId,
         terminal_id: `terminal:${args[2]}`,
       });
+      // Codex files each session by date and records its working directory in the first line.
+      if (fake.agentIdentity === "codex" && pane) {
+        const folder = join(root, "codex-sessions", "2026", "10", "16");
+        await mkdir(folder, { recursive: true });
+        await writeFile(
+          join(folder, `rollout-2026-10-16T12-00-00-${args[2]!.replace(/[^a-z0-9]/gi, "-")}.jsonl`),
+          [
+            { type: "session_meta", payload: { cwd: pane.cwd, thread_source: "user" } },
+            { type: "event_msg", payload: { type: "task_started" } },
+            {
+              type: "event_msg",
+              payload: {
+                type: "task_complete",
+                last_agent_message: fake.outputs.get(args[2]!) ?? `output ${args[2]}`,
+              },
+            },
+          ]
+            .map((entry) => JSON.stringify(entry))
+            .join("\n") + "\n",
+        );
+      }
       return ok(value);
     }
     return result;

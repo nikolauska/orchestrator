@@ -9,6 +9,7 @@ import {
 } from "./execution";
 import type { AgentBinding, HostError, ToolCheck } from "./helper-protocol";
 import { stringAt, valueAt, type RuntimeDeps, type WorkerRecord } from "./shared";
+import { CODEX_EFFORTS } from "./codex";
 
 export type HerdrAgent = {
   identity: string;
@@ -35,7 +36,7 @@ export type HerdrWorkspace = {
 };
 export type HerdrOptions = { signal?: AbortSignal };
 export type AgentKind = AgentBinding["identity"];
-export const AGENT_KINDS: readonly AgentKind[] = ["omp", "claude"];
+export const AGENT_KINDS: readonly AgentKind[] = ["omp", "claude", "codex"];
 export type HerdrIntegrationEvidence = { targetKey: string; check: ToolCheck };
 export type HerdrPreflight = { session: string; version: string; protocol: number };
 
@@ -302,10 +303,10 @@ export async function ensureIntegration(
         "user_action",
         "Run herdr integration install claude on this host.",
       );
-  } else if (agents.has("claude"))
+  } else if (agents.has("claude") || agents.has("codex"))
     throw new HerdrError(
       "PREREQUISITE_MISSING",
-      "Claude Code workers currently run only on the local machine",
+      `${agents.has("claude") ? "Claude Code" : "Codex"} workers currently run only on the local machine`,
       "none",
       "user_action",
     );
@@ -357,6 +358,7 @@ export async function getAgent(
   const identity = stringAt(agent, ["agent"]) ?? "";
   // Herdr names Claude Code sessions only by ID; the host resolves the ID to its transcript.
   const sessionKind = identity === "claude" ? "id" : "path";
+  const cwd = stringAt(agent, ["cwd"]);
   return {
     identity,
     status: stringAt(agent, ["agent_status"]) ?? "",
@@ -364,10 +366,17 @@ export async function getAgent(
     paneId: stringAt(agent, ["pane_id"]),
     tabId: stringAt(agent, ["tab_id"]),
     workspaceId: stringAt(agent, ["workspace_id"]),
-    cwd: stringAt(agent, ["cwd"]),
+    cwd,
     incarnation: stringAt(agent, ["terminal_id"]),
+    // Codex runs its hooks in its app server, outside the pane, so Herdr never learns a Codex
+    // session. Every worker has its own directory, which the host resolves to the newest Codex
+    // session recorded for it.
     sessionPath:
-      stringAt(session, ["kind"]) === sessionKind ? stringAt(session, ["value"]) : undefined,
+      identity === "codex"
+        ? cwd
+        : stringAt(session, ["kind"]) === sessionKind
+          ? stringAt(session, ["value"])
+          : undefined,
     completionSeq: numberAt(agent, "completion_seq"),
     stateChangeSeq: numberAt(agent, "state_change_seq"),
     interactiveReady:
@@ -384,6 +393,7 @@ export function agentBinding(
   expected: { name: string; paneId: string; tabId: string; workspaceId: string },
   revision: number,
   kind: AgentKind = "omp",
+  codexHome?: string,
 ): AgentBinding {
   if (
     agent.identity !== kind ||
@@ -407,6 +417,7 @@ export function agentBinding(
     workspaceId: expected.workspaceId,
     cwd,
     ...(agent.sessionPath ? { sessionPath: agent.sessionPath } : {}),
+    ...(codexHome ? { codexHome } : {}),
     ...(agent.incarnation ? { incarnation: agent.incarnation } : {}),
     ...(agent.completionSeq !== undefined ? { completionSeq: agent.completionSeq } : {}),
   };
@@ -764,8 +775,17 @@ export function startOmpAgent(
     options,
   );
 }
-/** remoteControl names the Claude Code Remote Control session; OMP has no equivalent. */
-export type AgentChoice = { model?: string; thinking?: string; remoteControl?: string };
+/**
+ * remoteControl names the Claude Code Remote Control session, or attaches a Codex worker to the
+ * user's remote-control Codex server; OMP has no equivalent. codexHome is a Codex worker's
+ * CODEX_HOME.
+ */
+export type AgentChoice = {
+  model?: string;
+  thinking?: string;
+  remoteControl?: string;
+  codexHome?: string;
+};
 export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 /** A Claude Code alias or full model name with an optional `:effort`; Claude Code resolves it. */
 export const CLAUDE_MODEL = new RegExp(
@@ -811,6 +831,95 @@ export function startClaudeAgent(
     options,
   );
 }
+/** POSIX single-quoting; Codex workers run only on the local Linux or macOS controller. */
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+export async function startCodexAgent(
+  deps: RuntimeDeps,
+  target: ExecutionTarget,
+  name: string,
+  pane: string,
+  directory: string,
+  selection: AgentChoice,
+  options: HerdrOptions = {},
+): Promise<string> {
+  if (target.kind !== "local" || target.os === "win32")
+    throw new HerdrError(
+      "PREREQUISITE_MISSING",
+      "Codex workers currently run only on the local Linux or macOS machine",
+      "none",
+      "user_action",
+    );
+  if (selection.thinking && !(CODEX_EFFORTS as readonly string[]).includes(selection.thinking))
+    throw new HerdrError("MODEL_UNAVAILABLE", `Unknown Codex effort: ${selection.thinking}`);
+  // Herdr starts agents with their canonical executable and no environment option, and a
+  // project pane comes from worktree open, which takes none either. The pane's own shell is
+  // the only place to set CODEX_HOME; it persists there, so relaunches in this pane keep it.
+  if (selection.codexHome)
+    await command(
+      deps,
+      target,
+      ["pane", "run", pane, `export CODEX_HOME=${shellQuote(selection.codexHome)}`],
+      true,
+      options,
+    );
+  const remote = !!selection.remoteControl;
+  const args = [
+    "agent",
+    "start",
+    name,
+    "--kind",
+    "codex",
+    "--pane",
+    pane,
+    "--",
+    // Codex otherwise starts or joins a shared app server on its own, which would show a
+    // worker in the user's remote-control apps without asking and ignore per-launch config.
+    ...(remote ? ["--remote", "unix://"] : ["--disable", "daemon_auto_start"]),
+    "-C",
+    directory,
+    // Each worker directory is new to Codex, which otherwise stops at a folder trust prompt.
+    // This override saves nothing; Codex's app server ignores it, so remote starts still prompt.
+    "-c",
+    `projects={${JSON.stringify(directory)}={trust_level="trusted"}}`,
+    // An unattended worker cannot answer approvals, and the workspace sandbox refuses commits
+    // because a worktree's Git data lives outside it. OMP workers run unsandboxed too.
+    "--dangerously-bypass-approvals-and-sandbox",
+    ...(selection.model ? ["-m", selection.model] : []),
+    ...(selection.thinking
+      ? ["-c", `model_reasoning_effort=${JSON.stringify(selection.thinking)}`]
+      : []),
+  ];
+  try {
+    return await command(deps, target, args, true, options);
+  } catch (error) {
+    if (!(error instanceof HerdrError) || error.herdrCode !== "agent_not_ready") throw error;
+    const screen = await readAgent(deps, target, pane, 40, options).catch(() => "");
+    if (!screen.includes("Trust this folder?"))
+      throw remote
+        ? new HerdrError(
+            error.code,
+            error.message,
+            error.effect,
+            error.retry,
+            "Remote-control Codex workers attach to the user's Codex app server: run codex remote-control start (under the worker's CODEX_HOME) and pair it, then relaunch.",
+            error.herdrCode,
+          )
+        : error;
+    // The user chose to trust worker directories at launch; Codex records each one in that
+    // CODEX_HOME's config.toml, which the orchestrator never edits itself.
+    await command(deps, target, ["agent", "send-keys", pane, "enter"], true, options);
+    // Leaving the startup dialog counts as a finished turn, so Herdr may report done, not idle.
+    return await command(
+      deps,
+      target,
+      ["agent", "wait", pane, "--until", "idle", "--until", "done", "--timeout", "30000"],
+      false,
+      options,
+    );
+  }
+}
 export function startAgent(
   deps: RuntimeDeps,
   target: ExecutionTarget,
@@ -822,6 +931,8 @@ export function startAgent(
   options: HerdrOptions = {},
 ): Promise<string> {
   if (kind === "claude") return startClaudeAgent(deps, target, name, pane, selection, options);
+  if (kind === "codex")
+    return startCodexAgent(deps, target, name, pane, directory, selection, options);
   return startOmpAgent(
     deps,
     target,

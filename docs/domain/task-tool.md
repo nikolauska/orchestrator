@@ -1,6 +1,6 @@
 # Task tool
 
-The Task tool starts visible OMP or Claude Code workers for one registered project or for research outside every registered project. Each request has exactly one scope and one machine. Project work uses the machine saved in its registration; a project request cannot override it.
+The Task tool starts visible OMP, Claude Code or Codex workers for one registered project or for research outside every registered project. Each request has exactly one scope and one machine. Project work uses the machine saved in its registration; a project request cannot override it.
 
 The tool is named `orchestrator_task`. A project request takes `project`, shared `context`, and `tasks`. An independent request instead takes `scope: "independent"`, shared `context`, `tasks`, and optional `machine`. No request can combine `project` with `scope` or `machine`.
 
@@ -23,7 +23,7 @@ Each task needs `kind`, `name`, and a nonempty `task`; it may set either `role` 
 
 ## Worker agents
 
-`agent` selects the worker: `omp` (the default) or `claude` for Claude Code. A Claude Code worker:
+`agent` selects the worker: `omp` (the default), `claude` for Claude Code, or `codex` for the Codex CLI. A Claude Code worker:
 
 - runs only on the local machine; a request that would start one on a saved remote machine is refused before anything is allocated;
 - takes an optional `model`, either a Claude Code alias such as `opus` or a full model name, with an optional `:low`, `:medium`, `:high`, `:xhigh` or `:max` effort suffix. It does not accept `role`. Without a model it uses the host's Claude Code default;
@@ -31,7 +31,17 @@ Each task needs `kind`, `name`, and a nonempty `task`; it may set either `role` 
 - takes an optional `remoteControl: true`, which starts it as a Claude Code Remote Control session named after the worker. You can then follow it, and answer its questions or permission prompts, from claude.ai or the Claude app. It stays on when the worker is relaunched. OMP workers refuse it;
 - requires Claude Code and Herdr's Claude integration on the machine. A batch with only Claude workers does not need OMP's model catalog.
 
-A request can mix OMP and Claude Code workers. Each worker's `agent`, and `remote_control` when it is on, appear in its launch and list results.
+A Codex worker:
+
+- runs only on the local Linux or macOS machine; a request that would start one on a saved remote machine is refused before anything is allocated;
+- takes an optional `model`, a Codex model name such as `gpt-6-sol`, with an optional `:low`, `:medium`, `:high`, `:xhigh`, `:max` or `:ultra` effort suffix. It does not accept `role`. Without a model it uses that Codex home's default;
+- runs with no sandbox and no approval prompts (`--dangerously-bypass-approvals-and-sandbox`), like OMP workers. An unattended worker cannot answer approvals, and Codex's workspace sandbox refuses commits in a worktree. Its assignment still forbids delegating;
+- takes an optional `codexHome`, an existing absolute folder used as `CODEX_HOME`, for example a separate work account. The orchestrator sets it in the worker's tab before Codex starts, and it stays set when the worker is relaunched. Other workers refuse it;
+- takes an optional `remoteControl: true`, which attaches it to your running remote-control Codex app server, so you can follow it and steer it from the Codex app. Start and pair that server yourself first (`codex remote-control start`, then `codex remote-control pair`, under the same `CODEX_HOME`). Without it, the worker runs inside its tab only and never shows in the app;
+- trusts its own new folder for that launch only. In remote-control mode Codex's server ignores that, so the orchestrator answers Codex's "Trust this folder?" prompt once, and Codex records the folder as trusted in that home's `config.toml`;
+- requires the Codex CLI on the machine. A batch with only Codex workers does not need OMP's model catalog.
+
+A request can mix OMP, Claude Code and Codex workers. Each worker's `agent`, `remote_control` when it is on, and `codex_home` when set appear in its launch and list results.
 
 ## Project work
 

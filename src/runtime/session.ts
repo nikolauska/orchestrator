@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { stringAt, valueAt } from "./shared";
 
-/** Final assistant text of an OMP session or a Claude Code transcript. */
+/** Final assistant text of an OMP session, a Claude Code transcript or a Codex session. */
 export async function lastResponse(sessionPath: string): Promise<string | undefined> {
   const lines = (await readFile(sessionPath, "utf8")).split("\n");
   let message: string | undefined;
@@ -28,6 +28,11 @@ function responseOf(line: string): { message?: string; texts: string[] } | undef
     return undefined;
   }
   const type = stringAt(entry, ["type"]);
+  // Codex closes each turn with an event carrying that turn's final answer.
+  if (type === "event_msg" && stringAt(entry, ["payload", "type"]) === "task_complete") {
+    const text = stringAt(entry, ["payload", "last_agent_message"])?.trim();
+    return { texts: text ? [text] : [] };
+  }
   // OMP writes {type:"message"}; Claude Code writes {type:"assistant"} and marks subagent lines.
   if (type !== "message" && type !== "assistant") return undefined;
   if (valueAt(entry, ["isSidechain"]) === true) return undefined;

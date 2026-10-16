@@ -217,6 +217,7 @@ export function publicRecord(record: WorkerRecord): Record<string, unknown> {
     name: record.name,
     ...(record.agent_kind ? { agent: record.agent_kind } : {}),
     ...(record.remote_control ? { remote_control: true } : {}),
+    ...(record.codex_home ? { codex_home: record.codex_home } : {}),
     ...(record.role ? { role: record.role } : {}),
     ...(record.model ? { model: record.model } : {}),
     ...(record.thinking ? { thinking: record.thinking } : {}),
@@ -995,6 +996,7 @@ export async function recoverWorker(
       model: record.model,
       thinking: record.thinking,
       ...(record.remote_control ? { remoteControl: record.name } : {}),
+      ...(record.codex_home ? { codexHome: record.codex_home } : {}),
     };
     record.phase = "starting_agent";
     persist(state, record);
@@ -1065,6 +1067,7 @@ export async function recoverWorker(
           },
           revision,
           record.agent_kind ?? "omp",
+          record.codex_home,
         );
   if (lookup.binding && lookup.binding.revision >= binding.revision) {
     const original = binding;
@@ -1803,8 +1806,8 @@ async function relaunchWorker(
       reason: "The original assignment was not recorded for this worker",
     };
   const directory = record.worktree ?? record.working_directory;
-  // A Claude Code worker without a model ran the host's Claude Code default and relaunches on it.
-  if (!directory || (!record.model && record.agent_kind !== "claude") || !record.agent_binding)
+  // A Claude Code or Codex worker without a model ran that CLI's default and relaunches on it.
+  if (!directory || (!record.model && !record.agent_kind) || !record.agent_binding)
     return {
       ...publicRecord(record),
       relaunch: "refused",

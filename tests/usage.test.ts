@@ -457,7 +457,7 @@ describe("Claude Code usage", () => {
         NOW,
       ),
     ).toEqual({
-      error: "quota-axi reported no Claude usage windows (state error: expired)",
+      error: "quota-axi reported no Claude Code usage windows (state error: expired)",
     });
   });
 });

@@ -1,6 +1,6 @@
 # Usage tool
 
-The Usage tool reports how much provider usage is left for the accounts OMP workers and Claude Code workers spend from. It only reports; it never picks a model.
+The Usage tool reports how much provider usage is left for the accounts OMP, Claude Code and Codex workers spend from. It only reports; it never picks a model.
 
 ## Arguments
 
@@ -29,3 +29,7 @@ Claude Code workers spend from Claude Code's own sign-in, which is separate from
 The numbers come from the repository's pinned `quota-axi`, which reads Claude Code's sign-in without the orchestrator handling the token. It never refreshes an expired sign-in, so the query does not change Claude Code's credentials. When the numbers can't be read, for example because Claude Code is not signed in, `claude_code` holds an `error` and the rest of the result is still returned.
 
 Claude Code workers run only on the local machine, so remote results show `claude_code` as unavailable instead of reporting the controller's Claude account.
+
+## Codex
+
+Codex workers spend from the Codex CLI's own sign-in. Local results add a `codex_cli` section in the same form as `claude_code`, read the same way through `quota-axi`. Pass `codexHome` (an absolute path) to read the sign-in under that `CODEX_HOME`, such as a separate work account; the section then names it in `codex_home`. Remote results show `codex_cli` as unavailable.

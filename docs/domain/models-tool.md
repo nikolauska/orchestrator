@@ -54,3 +54,9 @@ When a saved model is absent from the selected host's catalog, or an OMP role po
 Claude Code workers take a Claude Code model instead of an OMP one: an alias such as `opus` or a full model name, optionally with an effort level such as `opus:high`. Saving one with `agent: "claude"` remembers it in the same preferences map, marked as a Claude Code model. It takes no `machine` or `project`, because Claude Code workers run only on the local machine. Claude Code publishes no model catalog, so saving checks only that the value has the form a launch accepts; a misspelled full name is caught when a worker starts.
 
 Local lists show Claude Code preferences as rows with `agent: "claude"` and provider `claude-code`. The `all` view also lists the aliases `fable`, `opus`, `sonnet` and `haiku`. Lists for a remote machine leave Claude Code rows out. Launch a Claude Code row with `orchestrator_task` `agent: "claude"` and the row's exact `model`.
+
+## Codex models
+
+Codex workers take a Codex model name, optionally with an effort level such as `gpt-6-sol:high`. Saving one with `agent: "codex"` remembers it in the same preferences map, marked as a Codex model, with no `machine` or `project`. Each Codex home caches its own account's models, so saving checks only that the value has the form a launch accepts.
+
+Local lists show Codex preferences as rows with `agent: "codex"` and provider `codex-cli`. The `all` view also lists the models in the default Codex home's model cache, with their effort levels. Lists for a remote machine leave Codex rows out. Launch a Codex row with `orchestrator_task` `agent: "codex"` and the row's exact `model`.

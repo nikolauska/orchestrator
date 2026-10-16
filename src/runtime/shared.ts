@@ -84,14 +84,16 @@ export type TaskItem = {
   name: string;
   task: string;
   /** Worker agent; omitted means OMP. */
-  agent?: "omp" | "claude";
+  agent?: "omp" | "claude" | "codex";
   role?: string;
   /** Exact `provider/id`, optionally with a `:level` thinking suffix; mutually exclusive with role. */
   model?: string;
   /** Set by the task tool when it splits a `:level` suffix off `model`; never caller input. */
   thinking?: string;
-  /** Claude Code workers only: start with Remote Control so the user can follow them remotely. */
+  /** Claude Code and Codex workers only: start with remote control so the user can follow them. */
   remoteControl?: boolean;
+  /** Codex workers only: absolute CODEX_HOME to run under, such as a separate work account. */
+  codexHome?: string;
   pushTo?: string;
   startFrom?: string;
   hold?: boolean;
@@ -113,12 +115,12 @@ export type ModelsParams =
   | {
       op: "prefer";
       model: string;
-      agent?: "omp" | "claude";
+      agent?: "omp" | "claude" | "codex";
       for?: string[];
       rank?: number;
       note?: string;
     }
-  | { op: "avoid"; model: string; agent?: "omp" | "claude"; note?: string }
+  | { op: "avoid"; model: string; agent?: "omp" | "claude" | "codex"; note?: string }
   | { op: "forget"; model: string };
 export type ProjectPreflight = {
   scope: "project";
@@ -147,9 +149,12 @@ export type WorkerRecord = {
   projectPath?: string;
   name: string;
   /** Worker agent; absent means OMP, which every older record is. */
-  agent_kind?: "claude";
-  /** Claude Code Remote Control session, named after the worker; kept across relaunch. */
+  agent_kind?: "claude" | "codex";
+  /** Claude Code Remote Control session named after the worker, or a Codex worker attached to
+   * the user's remote-control Codex server; kept across relaunch. */
   remote_control?: boolean;
+  /** Codex worker's CODEX_HOME; absent means Codex's default. Kept across relaunch. */
+  codex_home?: string;
   role?: string;
   model?: string;
   thinking?: string;

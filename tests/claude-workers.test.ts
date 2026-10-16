@@ -171,7 +171,7 @@ describe("Claude Code workers", () => {
       tasks: [{ kind: "scout", name: "look", task: "L", remoteControl: true }],
     } as never);
     expect(result.isError).toBe(true);
-    expect((result.content[0] as { text: string }).text).toContain("Claude Code worker");
+    expect((result.content[0] as { text: string }).text).toContain("Claude Code or Codex worker");
     expect(agentStarts(fake)).toEqual([]);
   });
 

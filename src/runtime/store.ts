@@ -79,6 +79,7 @@ const FIELDS: readonly Field[] = [
   ["terminal_outcome_json", "terminal_outcome", false, "json"],
   ["agent_kind", "agent_kind", false],
   ["remote_control", "remote_control", false, "flag"],
+  ["codex_home", "codex_home", false],
 ];
 const workerTable = (name: string) =>
   `CREATE TABLE ${name} (${FIELDS.map(([column, , required]) => `${column} TEXT${column === "name" ? " PRIMARY KEY" : required ? " NOT NULL" : ""}`).join(", ")}, launched_at TEXT NOT NULL, updated_at TEXT NOT NULL)`;
@@ -179,13 +180,16 @@ export function validateWorkerRecord(record: WorkerRecord): void {
     throw new Error("Project worker requires project identity");
   if (record.scope === "project" && record.worktree && (!record.lease_id || !record.lease_holder))
     throw new Error("Project directory requires lease identity");
-  if (record.agent_kind !== undefined) z.literal("claude").parse(record.agent_kind);
-  if (record.remote_control && record.agent_kind !== "claude")
-    throw new Error("Only Claude Code workers can use Remote Control");
+  if (record.agent_kind !== undefined) z.enum(["claude", "codex"]).parse(record.agent_kind);
+  if (record.remote_control && record.agent_kind !== "claude" && record.agent_kind !== "codex")
+    throw new Error("Only Claude Code and Codex workers can use remote control");
+  if (record.codex_home !== undefined && record.agent_kind !== "codex")
+    throw new Error("Only Codex workers have a Codex home");
   if (record.agent_binding) {
     agentBindingSchema.parse(record.agent_binding);
     if (
       record.agent_binding.identity !== (record.agent_kind ?? "omp") ||
+      record.agent_binding.codexHome !== record.codex_home ||
       record.agent_binding.agentName !== record.agent_name ||
       record.agent_binding.session !== record.target.session ||
       record.agent_binding.paneId !== record.pane_id ||

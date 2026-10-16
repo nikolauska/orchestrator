@@ -2,7 +2,7 @@
 
 ## Requirements
 
-The root session and its workers can each be Oh My Pi (OMP) or Claude Code.
+The root session can be Oh My Pi (OMP) or Claude Code, and workers can be OMP, Claude Code or Codex.
 
 **Every machine that runs workers**
 
@@ -19,6 +19,12 @@ The root session and its workers can each be Oh My Pi (OMP) or Claude Code.
 - Claude Code and Bun on the local machine.
 - Herdr's Claude integration: `herdr integration install claude`.
 - Claude Code workers run only on the local machine. See [Claude Code as the root session](claude-code-root.md).
+
+**For Codex workers**
+
+- The Codex CLI on the local Linux or macOS machine, signed in under each Codex home you use.
+- For remote control, a running, paired remote-control Codex server: `codex remote-control start`, then `codex remote-control pair`.
+- Codex workers run only on the local machine. See the [Task tool](task-tool.md#worker-agents).
 
 **For remote machines**
 

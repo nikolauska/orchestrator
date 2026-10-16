@@ -16,6 +16,7 @@ This repository provides the orchestrator's visible-worker tools for an OMP or C
 | `mcp/claude-code.json`                  | Claude Code MCP config; never a project `.mcp.json`, which OMP also loads                       |
 | `.omp/worker-config.yml`                | Approved OMP settings overlay for every worker                                                  |
 | `.omp/claude-worker-settings.json`      | Approved permission settings for Claude Code workers                                            |
+| `src/runtime/codex.ts`                  | Codex worker model names, efforts, home and model cache                                         |
 | `docs/domain/`                          | Confirmed user-visible behavior                                                                 |
 | `docs/remote-helper.md`                 | Helper provisioning, runtime contract and entry points                                          |
 
